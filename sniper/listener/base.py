@@ -12,7 +12,9 @@ import abc
 import asyncio
 import random
 import time
-from typing import AsyncIterator
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import AsyncIterator, Optional
 
 from ..config import GeyserConfig
 from ..logging_setup import get_logger
@@ -27,6 +29,13 @@ class Listener(abc.ABC):
     def __init__(self, cfg: GeyserConfig) -> None:
         self.cfg = cfg
         self._stopped = asyncio.Event()
+        self.subscribed = False
+        """Set once the feed has acknowledged our subscription.
+
+        Distinguishes "your plan does not allow this subscription" from
+        "connected fine, the feed is just quiet" — which look identical from
+        the outside and have completely different fixes.
+        """
 
     @property
     @abc.abstractmethod
@@ -76,6 +85,88 @@ class Listener(abc.ABC):
             # every client comes back at once.
             await asyncio.sleep(random.uniform(0, delay))
             delay = min(delay * 2, self.cfg.reconnect_max_s)
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeResult:
+    """What one connection attempt actually achieved."""
+
+    backend: str
+    subscribed: bool
+    events_seen: int
+    first_event_ms: Optional[float] = None
+    error: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.subscribed and self.events_seen > 0
+
+    def explain(self) -> str:
+        """A diagnosis, not a status code."""
+        if self.error and not self.subscribed:
+            return (
+                f"could not subscribe: {self.error}\n"
+                f"    Most likely your plan does not include this subscription "
+                f"type, or the endpoint/API key is wrong."
+            )
+        if not self.subscribed:
+            return "connected but the subscription was never acknowledged"
+        if self.events_seen == 0:
+            return (
+                "subscribed, but no pump.fun launches arrived in the probe "
+                "window.\n    That is unusual on mainnet — the feed may be "
+                "filtered or lagging."
+            )
+        return (
+            f"subscribed and receiving — {self.events_seen} launches, first "
+            f"after {self.first_event_ms:.0f} ms"
+        )
+
+
+async def probe_listener(cfg: GeyserConfig, timeout_s: float = 20.0) -> ProbeResult:
+    """Connect once, without retrying, and report what happened.
+
+    Deliberately bypasses :meth:`Listener.stream`'s reconnect loop: for a
+    diagnostic, an authentication failure is the answer, not something to back
+    off and retry.
+    """
+    listener = create_listener(cfg)
+    started = time.monotonic()
+    events = 0
+    first_ms: Optional[float] = None
+    error: Optional[str] = None
+
+    stream = listener._connect_and_stream()
+    try:
+
+        async def consume() -> None:
+            nonlocal events, first_ms
+            async for _event in stream:
+                events += 1
+                if first_ms is None:
+                    first_ms = (time.monotonic() - started) * 1000
+                if events >= 3:
+                    return
+
+        await asyncio.wait_for(consume(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        pass  # Not a failure by itself — the feed may simply be quiet.
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        error = repr(exc)
+    finally:
+        with suppress(Exception):
+            await stream.aclose()
+        listener.stop()
+
+    return ProbeResult(
+        backend=listener.name,
+        subscribed=listener.subscribed,
+        events_seen=events,
+        first_event_ms=first_ms,
+        error=error,
+    )
 
 
 def create_listener(cfg: GeyserConfig) -> Listener:

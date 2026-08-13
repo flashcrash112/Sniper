@@ -15,7 +15,7 @@ Be clear-eyed about this. Sniping is not a free strategy:
 | Item | Rough cost | Notes |
 |---|---|---|
 | VPS | $10–60/mo | A cheap box is fine; location matters far more than specs |
-| Geyser feed | $50–500+/mo | **The real cost.** Free RPC will not win a contested launch |
+| Geyser feed | $0 to start, $50–500+/mo to compete | Free tier is enough for setup and dry runs — see step 2 |
 | Priority fees | 0.01–0.15 SOL *per attempt* | Paid whether or not you win the block |
 | Failed buys | Fee only | A reverted buy still costs the priority fee |
 
@@ -52,25 +52,66 @@ anything more than one network hop from a major peering point.
 
 ---
 
-## 2. Get a paid geyser feed
+## 2. Get a feed (start free)
 
-This is the part you cannot skip. The `logs` backend against a free public RPC
-works, but it sits behind the node's generic pubsub fan-out and it is the first
-thing to fall behind exactly when a launch is happening.
+**You do not need to pay yet.** A free Helius key gets you a standard RPC URL
+and a standard websocket, which is enough to run `check`, `verify-layout` and a
+full `--dry-run` soak with `backend = "logs"`. Do all of that first. Only pay
+when you actually intend to compete for a launch.
 
-Two realistic options:
+### On the Helius dashboard
 
-**Helius Atlas** (`backend = "helius_atlas"`) — geyser data over a websocket,
-no protobuf codegen. Requires a paid plan that includes `transactionSubscribe`;
-check their current tiers, as the plan names move around. This is the easiest
-good option and what I would start with.
+Sign up, then find the API key section (it has been called *API Keys* and
+*Endpoints* at different times — you are looking for the page that shows a key
+and the URLs built from it). Copy three things:
+
+| What it looks like | Goes in |
+|---|---|
+| `https://mainnet.helius-rpc.com/?api-key=KEY` | `[rpc] http_url` and `send_urls` |
+| `wss://mainnet.helius-rpc.com/?api-key=KEY` | `[geyser] endpoint` with `backend = "logs"` |
+| `wss://atlas-mainnet.helius-rpc.com/?api-key=KEY` | `[geyser] endpoint` with `backend = "helius_atlas"` |
+
+The third one — Atlas, which serves `transactionSubscribe` — is the paid
+upgrade. Put the key in the environment as `HELIUS_API_KEY` and let the config
+interpolate it with `${HELIUS_API_KEY}`, rather than pasting full URLs.
+
+### Do not trust the pricing page — test it
+
+Plan names and feature tiers move around. Instead of guessing which tier
+includes `transactionSubscribe`, point the config at Atlas and ask:
+
+```bash
+python -m sniper check
+```
+
+The feed probe connects, subscribes, and waits for real pump.fun launches:
+
+```
+geyser backend  helius_atlas
+endpoint        wss://atlas-mainnet.helius-rpc.com/?api-key=***
+feed            OK — subscribed and receiving — 3 launches, first after 412 ms
+```
+
+If your plan does not cover it, you get that as an answer rather than a
+mystery:
+
+```
+feed            PROBLEM — could not subscribe: RuntimeError("transactionSubscribe
+                rejected: {'code': -32601, 'message': '...'}")
+    Most likely your plan does not include this subscription type, or the
+    endpoint/API key is wrong.
+```
+
+It distinguishes all four cases that otherwise look identical: working,
+plan-rejected, subscribed-but-silent, and wrong-endpoint.
+
+### If you want the lowest latency
 
 **Yellowstone gRPC** (`backend = "yellowstone"`) — a dedicated node or a
 Yellowstone provider (Helius dedicated, Triton, QuickNode). Lowest latency,
 meaningfully more expensive. Run `./scripts/gen_proto.sh` once to generate the
-stubs against your provider's plugin version.
-
-Whichever you pick, get the endpoint URL and API key before continuing.
+stubs against your provider's plugin version, then `check` probes it the same
+way.
 
 ---
 
@@ -93,7 +134,7 @@ su - sniper
 git clone <your-fork> /opt/sniper/app && cd /opt/sniper/app
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m pytest -q          # 105 tests should pass before you go further
+python -m pytest -q          # 159 tests should pass before you go further
 ```
 
 If you chose the `yellowstone` backend:

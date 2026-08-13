@@ -130,6 +130,7 @@ class YellowstoneListener(Listener):
         try:
             stub = pb_grpc.GeyserStub(channel)
             call = stub.Subscribe(self._requests(pb, stop), metadata=metadata)
+            self.subscribed = True
             log.info("listener_connected", extra={"backend": self.name})
 
             async for update in call:

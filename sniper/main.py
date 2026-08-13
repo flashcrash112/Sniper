@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import sys
 import time
 from contextlib import suppress
@@ -37,7 +38,7 @@ from .keystore import (
     parse_secret_key,
     read_password,
 )
-from .listener.base import create_listener
+from .listener.base import create_listener, probe_listener
 from .logging_setup import get_logger, setup_logging, shutdown_logging
 from .matcher import Matcher
 from .metadata import MetadataFetcher, TokenMetadata
@@ -418,6 +419,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         shutdown_logging()
 
 
+def _redact(url: str) -> str:
+    """Hide the API key so `check` output can be pasted into an issue or a chat."""
+    return re.sub(r"(api[-_]?key=)[^&\s]+", r"\1***", url, flags=re.IGNORECASE)
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     """Validate config and connectivity without arming anything."""
     cfg = load_config(args.config)
@@ -462,8 +468,20 @@ def cmd_check(args: argparse.Namespace) -> int:
             )
             await buyer.close()
 
+        print(f"\ngeyser backend  {cfg.geyser.backend}")
+        print(f"endpoint        {_redact(cfg.geyser.endpoint)}")
+        if args.skip_feed:
+            print("feed            (skipped)")
+        else:
+            print(
+                f"probing the feed for up to {args.probe_seconds}s "
+                f"(this is what tells you whether your plan supports it)..."
+            )
+            probe = await probe_listener(cfg.geyser, timeout_s=args.probe_seconds)
+            print(f"feed            {'OK' if probe.ok else 'PROBLEM'} — {probe.explain()}")
+
         matcher = Matcher(cfg.target)
-        print(f"target ticker   {cfg.target.ticker}")
+        print(f"\ntarget ticker   {cfg.target.ticker}")
         print(f"target twitter  {cfg.target.twitter or '(none)'}")
         print(f"metadata fetch  {'required' if matcher.needs_metadata() else 'not needed'}")
         print(f"threshold       {cfg.target.confidence_threshold}")
@@ -600,6 +618,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = sub.add_parser("check", help="validate config and connectivity")
     add_config(check)
+    check.add_argument(
+        "--probe-seconds",
+        type=float,
+        default=20.0,
+        help="how long to listen for live launches when probing the feed",
+    )
+    check.add_argument(
+        "--skip-feed", action="store_true", help="skip the geyser feed probe"
+    )
     check.set_defaults(func=cmd_check)
 
     verify = sub.add_parser(

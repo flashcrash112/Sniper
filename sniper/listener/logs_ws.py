@@ -58,6 +58,7 @@ class LogsListener(Listener):
             ack = _json.loads(await ws.recv())
             if "error" in ack:
                 raise RuntimeError(f"logsSubscribe rejected: {ack['error']}")
+            self.subscribed = True
             log.info(
                 "listener_connected",
                 extra={"backend": self.name, "subscription": ack.get("result")},
