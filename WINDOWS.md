@@ -107,81 +107,46 @@ reopen it later: press Start and type `Ubuntu`.
 
 ---
 
-## Step 2 — Install what the bot needs
+## Steps 2 and 3 — Install everything (one command)
 
-In the Ubuntu window:
-
-```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip git
-```
-
-It will ask for the Linux password you just created. Typing shows nothing on
-screen — that is normal, just type it and press Enter.
-
-Now check your Python version:
+Paste this whole block into the Ubuntu window and press Enter. It installs
+everything, downloads the bot, and runs the tests to prove it works.
 
 ```bash
-python3 --version
+sudo apt update && sudo apt install -y git && \
+cd ~ && \
+git clone -b claude/pump-fun-sniper-bot-wunrae https://github.com/flashcrash112/Sniper.git sniper && \
+cd sniper && ./scripts/setup.sh
 ```
 
-You need **3.11 or higher**. If it says 3.10 or lower:
+It will ask for your Linux password near the start. Then it runs for a few
+minutes on its own. You want it to end with **`Setup complete.`**
 
-```bash
-sudo apt install -y python3.12 python3.12-venv
-```
+The script is safe to re-run — if it stops partway, fix whatever it complained
+about and run `./scripts/setup.sh` again.
 
-and use `python3.12` instead of `python3` in the next step.
-
----
-
-## Step 3 — Download the bot
-
-**Important:** put it in your Linux home folder, not on your Windows C: drive.
-
-```bash
-cd ~
-git clone -b claude/pump-fun-sniper-bot-wunrae https://github.com/flashcrash112/Sniper.git sniper
-cd sniper
-```
-
-The `-b` part matters — the code lives on that branch, and without it you may
-end up with an empty folder.
-
-> **If it asks for a username and password:** the repo is private. GitHub no
+> **If git asks for a username and password:** the repo is private. GitHub no
 > longer accepts your account password here — you need a Personal Access Token.
-> Go to GitHub → Settings → Developer settings → Personal access tokens →
-> Tokens (classic) → *Generate new token*, tick the **repo** box, and paste the
-> generated token when git asks for the password. Your GitHub username goes in
-> the username prompt as normal.
+> GitHub → Settings → Developer settings → Personal access tokens → Tokens
+> (classic) → *Generate new token*, tick the **repo** box, then paste the token
+> where it asks for the password. Your username goes in as normal.
 
-> **Why this matters.** Windows drives show up in Linux under `/mnt/c/...`, and
-> file permissions do not work properly there. The bot refuses to load a wallet
-> file that other users could read — a safety check — and on `/mnt/c` that check
-> can never pass, so it would refuse to start with a confusing error. Staying in
-> `~` avoids this entirely. It is also several times faster.
+> **Do not move the folder onto your Windows C: drive.** Windows drives are
+> mounted without working file permissions, so the wallet file's safety check
+> could never pass and the bot would refuse to start. The script checks for
+> this and stops you.
 
-Set it up:
+### Activating it later
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-That last one takes a few minutes.
-
-You will see `(.venv)` at the start of your prompt. That means it is active.
-**Every time you open a new Ubuntu window you need to run
-`cd ~/sniper && source .venv/bin/activate` again** before using the bot.
-
-Check it works:
+The bot runs inside a virtual environment. **Every time you open a new Ubuntu
+window**, run this first:
 
 ```bash
-python -m pytest -q
+cd ~/sniper && source .venv/bin/activate
 ```
 
-You should see `160 passed`. If you do, the bot is installed correctly.
+You will see `(.venv)` at the start of your prompt when it is active. If a
+command says `No module named sniper`, this is what you forgot.
 
 ---
 
@@ -225,24 +190,15 @@ export HELIUS_API_KEY=paste-your-key-here
 ```bash
 cp config.example.toml config.toml
 chmod 600 config.toml
-nano config.toml
+sed -i 's/^backend = .*/backend = "logs"/; s|atlas-mainnet|mainnet|' config.toml
 ```
 
-`nano` is a simple text editor. Arrow keys to move, type to edit, then
-**Ctrl+O** then **Enter** to save, and **Ctrl+X** to quit.
+That switches the feed from the paid one to the free one. Nothing else needs
+changing yet — the target ticker only matters once you are hunting a specific
+coin.
 
-For now, change just two things:
-
-```toml
-[geyser]
-backend = "logs"                                                   # <- was helius_atlas
-endpoint = "wss://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}"  # <- remove "atlas-"
-```
-
-Why: `helius_atlas` is the fast paid feed. `logs` is the free one. Start free.
-
-Leave everything else alone for now — the ticker does not matter until you are
-actually hunting a coin.
+To look at or edit the file later: `nano config.toml`. Arrow keys to move,
+**Ctrl+O** then **Enter** to save, **Ctrl+X** to quit.
 
 ---
 
