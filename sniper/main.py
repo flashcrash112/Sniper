@@ -44,7 +44,7 @@ from .matcher import Matcher
 from .metadata import MetadataFetcher, TokenMetadata
 from .pumpfun import LaunchEvent
 from .rpc import RpcError, RpcPool
-from .verify import format_report, verify_layout
+from .verify import format_report, summarise, verify_layout
 from .safety import KillSwitch, SpendLedger, clear_kill_switch
 
 log = get_logger("sniper")
@@ -507,30 +507,44 @@ def cmd_verify_layout(args: argparse.Namespace) -> int:
                 f"Fetching recent successful pump.fun buys to compare against "
                 f"the {cfg.buy.layout.value!r} layout...\n"
             )
-            reports = await verify_layout(rpc, cfg.buy.layout, samples=args.samples)
+            reports, stats = await verify_layout(rpc, cfg.buy.layout, samples=args.samples)
 
-        for index, report in enumerate(reports, 1):
-            print(f"Sample {index}/{len(reports)}")
-            print(format_report(report))
-            print()
+        if not args.quiet:
+            for index, report in enumerate(reports, 1):
+                print(f"Sample {index}/{len(reports)}")
+                print(format_report(report))
+                print()
 
-        if not reports:
-            print("No comparable transactions found.")
-            return 1
+        print(
+            f"Scanned {stats.signatures_seen} signatures, fetched "
+            f"{stats.transactions_fetched}, found {stats.buys_found} buys"
+            + (f", {stats.fetch_errors} fetch errors" if stats.fetch_errors else "")
+            + ".\n"
+        )
+        print(summarise(reports))
+        print()
 
         good = [r for r in reports if r.ok]
         if len(good) == len(reports):
             print(
-                f"PASS — all {len(reports)} samples match the {cfg.buy.layout.value!r} "
-                f"layout this bot encodes."
+                f"PASS — all {len(reports)} samples match the "
+                f"{cfg.buy.layout.value!r} layout this bot encodes."
             )
             return 0
 
         print(
-            f"FAIL — {len(reports) - len(good)} of {len(reports)} samples disagree "
-            f"with what we encode.\n"
-            f"Do not run live until this is resolved. See 'Keeping up with program "
-            f"changes' in the README."
+            f"FAIL — {len(reports) - len(good)} of {len(reports)} samples "
+            f"disagree with what we encode."
+        )
+        if good:
+            print(
+                "\nSome samples matched and some did not, which means pump.fun is "
+                "serving more than one instruction shape right now. Buying a coin "
+                "of an unsupported shape would revert."
+            )
+        print(
+            "Do not run live until this is resolved. See 'Keeping up with program "
+            "changes' in the README."
         )
         return 1
 
@@ -637,8 +651,13 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--samples",
         type=int,
-        default=3,
-        help="how many recent buys to check against (default 3)",
+        default=8,
+        help="how many recent buys to check against (default 8)",
+    )
+    verify.add_argument(
+        "--quiet",
+        action="store_true",
+        help="only print the summary, not each sample's account table",
     )
     verify.set_defaults(func=cmd_verify_layout)
 

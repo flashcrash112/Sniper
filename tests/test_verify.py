@@ -64,6 +64,7 @@ def test_our_own_encoding_passes_verification():
     assert report.notes == []
     # Every derivable position was actually checked, not silently skipped.
     assert sum(1 for c in report.checks if c.ok is True) == 12
+    assert report.token_program_name == "SPL Token (legacy)"
 
 
 def test_legacy_encoding_is_detected_as_legacy():
@@ -94,6 +95,58 @@ def test_a_swapped_account_is_caught():
     assert not report.ok
     bad = {c.role for c in report.mismatches}
     assert bad == {"system_program", "token_program"}
+
+
+def test_a_token_2022_mint_is_recognised_not_reported_as_three_failures():
+    """The real mainnet case: Token-2022 changes the ATA seeds.
+
+    Naively comparing against the legacy token program reports three
+    mismatches — token_program and both ATAs — for what is one fact. Deriving
+    the ATAs against the observed token program collapses that to zero.
+    """
+    from sniper.pumpfun import derive_associated_token_account, derive_bonding_curve
+    from sniper.verify import TOKEN_2022_PROGRAM
+
+    observed, data = make_buy()
+    mint, user = observed[2], observed[6]
+    curve = derive_bonding_curve(mint)
+
+    t22 = list(observed)
+    t22[4] = derive_associated_token_account(curve, mint, TOKEN_2022_PROGRAM)
+    t22[5] = derive_associated_token_account(user, mint, TOKEN_2022_PROGRAM)
+    t22[8] = TOKEN_2022_PROGRAM
+
+    report = compare_against_observed(t22, data, BuyLayout.CURRENT)
+    assert report.mismatches == [], [c.role for c in report.mismatches]
+    assert report.token_program_name == "Token-2022"
+    assert any("Token-2022" in note for note in report.notes)
+
+
+def test_legacy_ata_against_a_token_2022_mint_is_caught():
+    """The inverse: right token program, ATAs derived with the wrong one."""
+    from sniper.verify import TOKEN_2022_PROGRAM
+
+    observed, data = make_buy()
+    broken = list(observed)
+    broken[8] = TOKEN_2022_PROGRAM  # ATAs at 4/5 still legacy-derived
+
+    report = compare_against_observed(broken, data, BuyLayout.CURRENT)
+    assert {c.role for c in report.mismatches} == {
+        "associated_bonding_curve",
+        "associated_user",
+    }
+
+
+def test_a_non_token_program_at_index_8_is_caught():
+    from solders.pubkey import Pubkey as _P
+
+    observed, data = make_buy()
+    broken = list(observed)
+    broken[8] = _P.new_unique()
+
+    report = compare_against_observed(broken, data, BuyLayout.CURRENT)
+    assert "token_program" in {c.role for c in report.mismatches}
+    assert any("neither SPL Token nor Token-2022" in n for n in report.notes)
 
 
 def test_a_wrong_pda_is_caught():
@@ -240,3 +293,47 @@ def test_non_pumpfun_transaction_yields_nothing():
         "meta": {},
     }
     assert _find_buy_instruction(transaction) is None
+
+
+def test_an_extended_layout_is_distinguished_from_a_reordered_one():
+    """Extra accounts appended is an additive fix; reordering is not.
+
+    Conflating them sends you rewriting an account list that was already
+    correct, so the report has to tell them apart.
+    """
+    from solders.pubkey import Pubkey as _P
+
+    observed, data = make_buy()
+    extended = list(observed) + [_P.new_unique(), _P.new_unique()]
+
+    report = compare_against_observed(extended, data, BuyLayout.CURRENT)
+    assert not report.ok
+    assert report.mismatches == []
+    assert any("EXTENDED by 2" in note for note in report.notes)
+    assert any("not reordered" in note for note in report.notes)
+
+
+def test_a_reordered_layout_does_not_claim_to_be_merely_extended():
+    from solders.pubkey import Pubkey as _P
+
+    observed, data = make_buy()
+    broken = list(observed) + [_P.new_unique(), _P.new_unique()]
+    broken[3] = _P.new_unique()  # bonding curve wrong -> genuinely reordered
+
+    report = compare_against_observed(broken, data, BuyLayout.CURRENT)
+    assert report.mismatches
+    assert not any("EXTENDED" in note for note in report.notes)
+
+
+def test_summarise_groups_samples_by_shape():
+    from sniper.verify import summarise
+
+    observed, data = make_buy()
+    good = compare_against_observed(observed, data, BuyLayout.CURRENT)
+    legacy_obs, legacy_data = make_buy(BuyLayout.LEGACY)
+    other = compare_against_observed(legacy_obs, legacy_data, BuyLayout.CURRENT)
+
+    text = summarise([good, good, other])
+    assert "2 x" in text and "16 accounts" in text
+    assert "1 x" in text and "12 accounts" in text
+    assert "matches our encoding" in text and "does NOT match" in text

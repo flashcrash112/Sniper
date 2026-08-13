@@ -17,6 +17,7 @@ failure surface of a layout drift.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
@@ -48,6 +49,17 @@ log = get_logger("sniper.verify")
 
 LAYOUT_ACCOUNT_COUNTS = {BuyLayout.CURRENT: 16, BuyLayout.LEGACY: 12}
 
+TOKEN_2022_PROGRAM = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+
+# Both are valid token programs for a pump.fun mint. Which one a given mint
+# uses changes the associated-token-account addresses, because the token
+# program ID is one of the ATA derivation seeds — so a Token-2022 mint makes a
+# legacy-derived ATA wrong, and vice versa.
+KNOWN_TOKEN_PROGRAMS = {
+    TOKEN_PROGRAM: "SPL Token (legacy)",
+    TOKEN_2022_PROGRAM: "Token-2022",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class SlotCheck:
@@ -78,7 +90,18 @@ class LayoutReport:
     checks: list[SlotCheck] = field(default_factory=list)
     mint: Optional[Pubkey] = None
     fee_recipient: Optional[Pubkey] = None
+    token_program: Optional[Pubkey] = None
     notes: list[str] = field(default_factory=list)
+
+    @property
+    def token_program_name(self) -> str:
+        return KNOWN_TOKEN_PROGRAMS.get(self.token_program, "UNKNOWN")
+
+    @property
+    def shape(self) -> str:
+        """A short key for grouping samples that agree with each other."""
+        layout = self.detected_layout.value if self.detected_layout else "unknown"
+        return f"{self.account_count} accounts / {self.token_program_name} / {layout}"
 
     @property
     def mismatches(self) -> list[SlotCheck]:
@@ -96,41 +119,84 @@ class LayoutReport:
 # --- Fetching a reference transaction --------------------------------------
 
 
-async def fetch_recent_buys(
-    rpc: RpcPool, scan_limit: int = 40, want: int = 3
-) -> list[dict]:
-    """Find recent successful pump.fun buys and return their decoded transactions.
+@dataclass(frozen=True, slots=True)
+class ScanStats:
+    """How the sample gathering actually went, so a thin result is explicable."""
 
-    Scans back over the program's recent signatures rather than trusting any
-    single transaction — one sample could be an unusual client, three agreeing
-    is a layout.
+    signatures_seen: int = 0
+    transactions_fetched: int = 0
+    buys_found: int = 0
+    fetch_errors: int = 0
+
+
+async def fetch_recent_buys(
+    rpc: RpcPool, scan_limit: int = 100, want: int = 8, concurrency: int = 4
+) -> tuple[list[dict], ScanStats]:
+    """Find recent successful pump.fun buys and return their transactions.
+
+    Samples widely rather than trusting one transaction: pump.fun can serve
+    several instruction shapes at once (a legacy-SPL mint and a Token-2022 mint
+    take different account lists), so a single sample tells you that a shape
+    exists, not that it is the only one.
+
+    Fetches concurrently but with a small cap, and retries once on failure —
+    a free-tier RPC key will rate-limit a burst of `getTransaction` calls, and
+    the resulting empty result would otherwise look like "no buys are
+    happening" rather than "you got throttled".
     """
     signatures = await rpc.call(
         "getSignaturesForAddress",
         [str(PUMP_FUN_PROGRAM), {"limit": scan_limit, "commitment": "confirmed"}],
     )
+    candidates = [
+        entry["signature"] for entry in (signatures or []) if entry.get("err") is None
+    ]
+    stats = {"fetched": 0, "errors": 0}
     found: list[dict] = []
-    for entry in signatures or []:
-        if entry.get("err") is not None:
-            continue
-        transaction = await rpc.call(
-            "getTransaction",
-            [
-                entry["signature"],
-                {
-                    "encoding": "json",
-                    "commitment": "confirmed",
-                    "maxSupportedTransactionVersion": 0,
-                },
-            ],
-        )
-        if not transaction:
-            continue
-        if _find_buy_instruction(transaction) is not None:
-            found.append(transaction)
-            if len(found) >= want:
-                break
-    return found
+    semaphore = asyncio.Semaphore(concurrency)
+    done = asyncio.Event()
+
+    async def fetch(signature: str) -> None:
+        if done.is_set():
+            return
+        async with semaphore:
+            if done.is_set():
+                return
+            for attempt in range(2):
+                try:
+                    transaction = await rpc.call(
+                        "getTransaction",
+                        [
+                            signature,
+                            {
+                                "encoding": "json",
+                                "commitment": "confirmed",
+                                "maxSupportedTransactionVersion": 0,
+                            },
+                        ],
+                    )
+                    break
+                except Exception:
+                    if attempt == 0:
+                        # Almost always a rate limit; back off and try once more.
+                        await asyncio.sleep(0.5)
+                        continue
+                    stats["errors"] += 1
+                    return
+            stats["fetched"] += 1
+            if transaction and _find_buy_instruction(transaction) is not None:
+                found.append(transaction)
+                if len(found) >= want:
+                    done.set()
+
+    await asyncio.gather(*(fetch(s) for s in candidates), return_exceptions=True)
+
+    return found[:want], ScanStats(
+        signatures_seen=len(candidates),
+        transactions_fetched=stats["fetched"],
+        buys_found=len(found),
+        fetch_errors=stats["errors"],
+    )
 
 
 def _account_keys(transaction: dict) -> list[Pubkey]:
@@ -247,14 +313,31 @@ def compare_against_observed(
     mint = observed[2]
     user = observed[6]
 
+    # Read the token program out of the transaction rather than assuming the
+    # legacy one. It is an ATA seed, so assuming it would report three
+    # mismatches (token_program and both ATAs) for what is really one fact.
+    token_program = observed[8] if len(observed) > 8 else TOKEN_PROGRAM
+    if token_program not in KNOWN_TOKEN_PROGRAMS:
+        notes.append(
+            f"account 8 is {token_program}, which is neither SPL Token nor "
+            f"Token-2022 — the account order has changed, so the positions "
+            f"below are being compared against the wrong roles"
+        )
+        token_program = TOKEN_PROGRAM
+    elif token_program == TOKEN_2022_PROGRAM:
+        notes.append(
+            "this mint uses Token-2022, so its associated token accounts are "
+            "derived with the Token-2022 program ID as a seed"
+        )
+
+    bonding_curve = derive_bonding_curve(mint)
     # Everything we can independently derive from the mint and the buyer.
     expectations: dict[int, Pubkey] = {
         0: GLOBAL_ACCOUNT,
-        3: derive_bonding_curve(mint),
-        4: derive_associated_token_account(derive_bonding_curve(mint), mint),
-        5: derive_associated_token_account(user, mint),
+        3: bonding_curve,
+        4: derive_associated_token_account(bonding_curve, mint, token_program),
+        5: derive_associated_token_account(user, mint, token_program),
         7: SYSTEM_PROGRAM,
-        8: TOKEN_PROGRAM,
         10: EVENT_AUTHORITY,
         11: PUMP_FUN_PROGRAM,
     }
@@ -267,6 +350,20 @@ def compare_against_observed(
     checks = []
     for index, account in enumerate(observed):
         role = _ROLES[index] if index < len(_ROLES) else f"unknown[{index}]"
+        if index == 8:
+            # Not compared against a fixed value — either token program is
+            # legitimate — but it must be *a* token program. That still catches
+            # an account-order change that lands something else here.
+            checks.append(
+                SlotCheck(
+                    index=index,
+                    role=role,
+                    observed=account,
+                    expected=None,
+                    ok=account in KNOWN_TOKEN_PROGRAMS,
+                )
+            )
+            continue
         expected = expectations.get(index)
         checks.append(
             SlotCheck(
@@ -290,6 +387,26 @@ def compare_against_observed(
             f"{expected_data_len}"
         )
 
+    # Distinguish "reordered" from "extended". If every position we know about
+    # still matches and there are simply more accounts on the end, the fix is
+    # additive — identify the extras — rather than a rewrite of the account
+    # list. That is a much smaller and less dangerous change, so say so.
+    judged = [c for c in checks if c.ok is not None]
+    if (
+        detected is None
+        and count > LAYOUT_ACCOUNT_COUNTS[BuyLayout.CURRENT]
+        and judged
+        and all(c.ok for c in judged)
+    ):
+        extra = count - LAYOUT_ACCOUNT_COUNTS[BuyLayout.CURRENT]
+        notes.append(
+            f"all {LAYOUT_ACCOUNT_COUNTS[BuyLayout.CURRENT]} accounts we encode "
+            f"match exactly, in order — the layout was EXTENDED by {extra} "
+            f"account(s), not reordered. Identify accounts "
+            f"{LAYOUT_ACCOUNT_COUNTS[BuyLayout.CURRENT]}-{count - 1} and append "
+            f"them in build_buy_instruction"
+        )
+
     return LayoutReport(
         signature=signature,
         slot=slot,
@@ -300,20 +417,23 @@ def compare_against_observed(
         checks=checks,
         mint=mint,
         fee_recipient=observed[1],
+        token_program=token_program,
         notes=notes,
     )
 
 
 async def verify_layout(
-    rpc: RpcPool, configured_layout: BuyLayout, samples: int = 3
-) -> list[LayoutReport]:
+    rpc: RpcPool, configured_layout: BuyLayout, samples: int = 8
+) -> tuple[list[LayoutReport], ScanStats]:
     """Fetch recent mainnet buys and check each against our encoding."""
-    transactions = await fetch_recent_buys(rpc, want=samples)
+    transactions, stats = await fetch_recent_buys(rpc, want=samples)
     if not transactions:
         raise RuntimeError(
-            "found no recent successful pump.fun buys to compare against — "
-            "check [rpc] http_url, and note that some providers restrict "
-            "getSignaturesForAddress"
+            f"found no recent successful pump.fun buys to compare against.\n"
+            f"  scanned {stats.signatures_seen} signatures, fetched "
+            f"{stats.transactions_fetched}, {stats.fetch_errors} errors.\n"
+            f"  A high error count usually means the RPC key is being rate "
+            f"limited — wait a moment and re-run, or use a paid endpoint."
         )
 
     reports = []
@@ -333,7 +453,30 @@ async def verify_layout(
                 slot=transaction.get("slot"),
             )
         )
-    return reports
+    return reports, stats
+
+
+def summarise(reports: Sequence[LayoutReport]) -> str:
+    """Group samples by shape.
+
+    The distribution is the useful part: one disagreeing sample means a shape
+    exists, while every sample agreeing means the program moved. pump.fun can
+    serve more than one shape at a time, so a histogram answers a question a
+    single sample cannot.
+    """
+    counts: dict[str, int] = {}
+    passing: dict[str, int] = {}
+    for report in reports:
+        counts[report.shape] = counts.get(report.shape, 0) + 1
+        if report.ok:
+            passing[report.shape] = passing.get(report.shape, 0) + 1
+
+    lines = ["Shapes observed across samples:", ""]
+    for shape, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+        good = passing.get(shape, 0)
+        verdict = "matches our encoding" if good == count else "does NOT match"
+        lines.append(f"  {count:>2} x  {shape:<48} {verdict}")
+    return "\n".join(lines)
 
 
 def format_report(report: LayoutReport) -> str:

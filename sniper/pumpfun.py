@@ -324,10 +324,18 @@ def derive_user_volume_accumulator(user: Pubkey) -> Pubkey:
     )[0]
 
 
-def derive_associated_token_account(owner: Pubkey, mint: Pubkey) -> Pubkey:
-    """ATA derivation that also works for PDA owners (the bonding curve)."""
+def derive_associated_token_account(
+    owner: Pubkey, mint: Pubkey, token_program: Pubkey = TOKEN_PROGRAM
+) -> Pubkey:
+    """ATA derivation that also works for PDA owners (the bonding curve).
+
+    `token_program` is one of the derivation seeds, so a mint created under
+    Token-2022 has a completely different ATA from the same mint under the
+    legacy SPL Token program. Passing the wrong one yields a valid-looking
+    address that the runtime will reject.
+    """
     return Pubkey.find_program_address(
-        [bytes(owner), bytes(TOKEN_PROGRAM), bytes(mint)],
+        [bytes(owner), bytes(token_program), bytes(mint)],
         ASSOCIATED_TOKEN_PROGRAM,
     )[0]
 
