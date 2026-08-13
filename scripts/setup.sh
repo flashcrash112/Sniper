@@ -130,9 +130,9 @@ Every new terminal, activate the environment first:
 
 Then, in order:
 
-  1. Create your wallet (pick a strong password and save it — there is no reset):
+  1. Create your wallet. It will prompt for a password — typing shows nothing,
+     which is normal. Save that password; there is no reset.
 
-        export SNIPER_KEYSTORE_PASSWORD='your-password-here'
         python -m sniper keystore create ./keystore.json --generate
 
   2. Get a free API key from https://helius.dev and set it:

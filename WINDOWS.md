@@ -172,9 +172,17 @@ command says `No module named sniper`, this is what you forgot.
 This makes a brand new, empty Solana wallet, encrypted with a password.
 
 ```bash
-export SNIPER_KEYSTORE_PASSWORD='pick-a-long-password-here'
 python -m sniper keystore create ./keystore.json --generate
 ```
+
+It asks for a password, twice. Typing shows nothing on screen — normal.
+
+> Do **not** set `SNIPER_KEYSTORE_PASSWORD` by hand just to skip the prompt.
+> Anything you type at the shell is saved to `~/.bash_history` in plain text,
+> so your wallet password would sit unencrypted on disk — which defeats having
+> an encrypted keystore at all. Let it prompt. (The one place the environment
+> variable belongs is a root-owned `0600` file read by systemd on a server,
+> which is how [DEPLOY.md](DEPLOY.md) sets it up.)
 
 It prints a **public key** — an address like `C35qGut6EcndFfHcw...`. That is your
 new wallet's address. Nothing is in it yet, and that is fine for now.
