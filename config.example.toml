@@ -1,0 +1,144 @@
+# pump.fun sniper — copy to config.toml and edit.
+#
+# Any string may reference an environment variable as ${VAR_NAME}. Keep API
+# keys and passwords in the environment, not in this file.
+#
+#   cp config.example.toml config.toml
+#   chmod 600 config.toml
+#   python -m sniper check -c config.toml
+
+[rpc]
+# Used for startup queries (global account, balances) and confirmations.
+http_url = "https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}"
+
+# Endpoints the signed buy is broadcast to, all at once. The first to accept
+# wins. Two or three well-connected endpoints materially improve the odds of
+# landing in the next block; a dozen mostly wastes bandwidth.
+send_urls = [
+  "https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}",
+  "https://api.mainnet-beta.solana.com",
+]
+
+commitment = "confirmed"
+blockhash_refresh_ms = 400   # kept fresh in the background, never on the hot path
+keepalive_interval_s = 15    # holds TLS sessions open so a send never handshakes
+
+
+[geyser]
+# yellowstone     gRPC to a Yellowstone plugin. Lowest latency. Production.
+#                 Run ./scripts/gen_proto.sh once before using it.
+# helius_atlas    Helius Atlas websocket (transactionSubscribe). Geyser-backed,
+#                 no codegen. The easiest fast option.
+# logs            Plain logsSubscribe against any RPC websocket. Works
+#                 everywhere, slowest. Good for development.
+backend = "helius_atlas"
+
+# yellowstone:   "https://your-node.helius-rpc.com:2053"
+# helius_atlas:  "wss://atlas-mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}"
+# logs:          "wss://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}"
+endpoint = "wss://atlas-mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}"
+
+# Only used by the yellowstone backend (sent as the `x-token` header).
+# x_token = "${GEYSER_X_TOKEN}"
+
+ping_interval_s = 20
+reconnect_min_s = 0.25
+reconnect_max_s = 10
+
+
+[target]
+# Required. Matched case-insensitively; a leading "$" is ignored.
+ticker = "EXAMPLE"
+
+# Optional but strongly recommended — a ticker alone does not identify a coin.
+# Accepts any spelling: "@handle", "handle", "https://x.com/handle",
+# "https://twitter.com/handle/status/123", "https://x.com/i/communities/123".
+# Matching this costs one HTTP fetch of the off-chain metadata (see below).
+twitter = "https://x.com/example"
+
+# Optional extra signals.
+# name_contains = "official"
+# creator = "So11111111111111111111111111111111111111112"
+
+# Fire only at or above this confidence. See the README for the score table.
+# With the default weights, 0.7 means "ticker alone is not enough".
+confidence_threshold = 0.7
+
+# Hard gate: never buy unless the Twitter link was fetched and matched.
+# Safer than the threshold alone, and immune to reweighting mistakes.
+require_twitter = false
+
+# Halve the confidence of every sighting of this ticker after the first, so the
+# clone wave that follows a real launch is ignored.
+prefer_earliest = true
+
+# Signal weights. Confidence is their weighted mean over whichever signals you
+# configured above.
+weight_ticker = 0.6
+weight_twitter = 0.4
+weight_name = 0.1
+weight_creator = 0.3
+
+# Budget for the off-chain metadata fetch. Past this we give up and score the
+# Twitter signal as unverified (which, at the default threshold, means no buy).
+# This is a direct latency cost — see "Latency" in the README.
+metadata_timeout_ms = 400
+metadata_gateways = [
+  "https://ipfs.io/ipfs/",
+  "https://cloudflare-ipfs.com/ipfs/",
+]
+
+
+[wallet]
+# Created with: python -m sniper keystore create ./keystore.json --generate
+keystore_path = "./keystore.json"
+# Password is read from this environment variable, or prompted for on a tty.
+password_env = "SNIPER_KEYSTORE_PASSWORD"
+
+
+[buy]
+amount_sol = 0.25
+
+# Slippage tolerance, basis points. 1000 = 10%. Applied in both directions:
+# it cuts the token request and raises the SOL ceiling, so the buy survives
+# someone landing ahead of us instead of reverting.
+slippage_bps = 1000
+
+# Priority fee, micro-lamports per compute unit. This is the main lever for
+# landing in the next block. At the 120k limit below:
+#   1_000_000 µlam/CU = 0.12 SOL   (aggressive)
+#     100_000 µlam/CU = 0.012 SOL  (competitive)
+#      10_000 µlam/CU = 0.0012 SOL (cheap, often too slow for a hot launch)
+priority_fee_microlamports = 500000
+
+# Keep this close to actual usage — the fee is price x limit.
+# A create-ATA + buy costs roughly 90-110k CU.
+compute_unit_limit = 120000
+
+# "current" (16 accounts) or "legacy" (12). Only change if buys start failing
+# with account-count errors. See "Keeping up with program changes".
+layout = "current"
+track_volume = false
+
+
+[safety]
+# Log what would be bought, send nothing. Overridden on by --dry-run.
+dry_run = false
+
+# touch this file to halt instantly (python -m sniper kill).
+kill_switch_file = "./KILL"
+
+# Hard ceiling on everything this process can ever spend, priority fees
+# included. Must cover at least one buy or startup fails.
+max_total_spend_sol = 0.5
+
+# 1 means: buy once, then stop trading.
+max_positions = 1
+
+confirm_timeout_s = 30
+
+
+[logging]
+level = "INFO"
+json = true
+file = "./logs/sniper.jsonl"

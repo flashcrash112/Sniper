@@ -1,0 +1,13 @@
+solders>=0.23,<1.0
+solana>=0.36,<1.0
+websockets>=12.0
+aiohttp>=3.9
+cryptography>=42.0
+base58>=2.1
+
+# Optional, both recommended on a live VPS:
+#   orjson       faster JSON decoding on the feed hot path
+#   grpcio       required by the `yellowstone` backend
+#   grpcio-tools required by ./scripts/gen_proto.sh
+orjson>=3.9
+grpcio>=1.60

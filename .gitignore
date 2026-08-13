@@ -1,0 +1,27 @@
+# Secrets — never commit these
+config.toml
+keystore.json
+*.keystore
+*.env
+secrets.env
+
+# Kill switch flag
+KILL
+
+# Logs
+logs/
+*.jsonl
+
+# Generated protobuf stubs (produced by ./scripts/gen_proto.sh)
+sniper/listener/proto/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
