@@ -272,16 +272,21 @@ class Buyer:
             )
         return quote_buy(state, self.cfg.amount_lamports, self.cfg.slippage_bps)
 
-    def build_transaction(
+    def build_instructions(
         self,
         event: LaunchEvent,
         quote: BuyQuote,
-        blockhash: Hash,
+        payer: Optional[Pubkey] = None,
         token_program: Optional[Pubkey] = None,
-    ) -> tuple[VersionedTransaction, Pubkey]:
-        """Build and sign the buy. Returns the transaction and our token account."""
+    ) -> list[Instruction]:
+        """The instruction list for a buy, without compiling or signing it.
+
+        `payer` exists so a simulation can be compiled for an address we do not
+        hold the key for; it defaults to our own wallet.
+        """
         assert self._fee_recipient is not None
 
+        payer = payer or self.pubkey
         # The mint's token program is account 8 *and* a seed of both associated
         # token accounts, so it has to be settled before anything is derived.
         token_program = token_program or event.token_program or self.cfg.token_program
@@ -291,10 +296,13 @@ class Buyer:
         associated_bonding_curve = derive_associated_token_account(
             bonding_curve, mint, token_program
         )
-        associated_user = derive_associated_token_account(
-            self.pubkey, mint, token_program
-        )
+        associated_user = derive_associated_token_account(payer, mint, token_program)
         creator_vault = derive_creator_vault(event.creator)
+        volume_accumulator = (
+            self._user_volume_accumulator
+            if payer == self.pubkey
+            else derive_user_volume_accumulator(payer)
+        )
 
         accounts = BuyAccounts(
             fee_recipient=self._fee_recipient,
@@ -302,17 +310,17 @@ class Buyer:
             bonding_curve=bonding_curve,
             associated_bonding_curve=associated_bonding_curve,
             associated_user=associated_user,
-            user=self.pubkey,
+            user=payer,
             creator_vault=creator_vault,
-            user_volume_accumulator=self._user_volume_accumulator,
+            user_volume_accumulator=volume_accumulator,
             token_program=token_program,
         )
 
         instructions = [
             *self._budget_ixs,
             build_create_ata_idempotent_instruction(
-                payer=self.pubkey,
-                owner=self.pubkey,
+                payer=payer,
+                owner=payer,
                 mint=mint,
                 ata=associated_user,
                 token_program=token_program,
@@ -331,12 +339,26 @@ class Buyer:
         if self.jito is not None and self.jito_cfg is not None:
             instructions.append(
                 build_tip_instruction(
-                    self.pubkey,
-                    self.jito_cfg.tip_lamports,
-                    self.jito.next_tip_account(),
+                    payer, self.jito_cfg.tip_lamports, self.jito.next_tip_account()
                 )
             )
+        return instructions
 
+    def build_transaction(
+        self,
+        event: LaunchEvent,
+        quote: BuyQuote,
+        blockhash: Hash,
+        token_program: Optional[Pubkey] = None,
+    ) -> tuple[VersionedTransaction, Pubkey]:
+        """Build and sign the buy. Returns the transaction and our token account."""
+        token_program = token_program or event.token_program or self.cfg.token_program
+        instructions = self.build_instructions(
+            event, quote, payer=self.pubkey, token_program=token_program
+        )
+        associated_user = derive_associated_token_account(
+            self.pubkey, event.mint, token_program
+        )
         message = MessageV0.try_compile(
             payer=self.pubkey,
             instructions=instructions,

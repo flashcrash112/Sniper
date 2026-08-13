@@ -31,7 +31,7 @@ from .buyer import Buyer, BuyOutcome
 from .config import Config, ConfigError, load_config
 from .constants import LAMPORTS_PER_SOL, PUMP_FUN_PROGRAM
 from .idl import PROGRAMS, fetch_idl, idl_address, summarise_idl
-from .simulate import find_recent_mint, simulate_buy
+from .simulate import find_recent_buyer, simulate_buy
 from .exit import ExitManager, Position
 from .jito import JitoClient
 from .keystore import (
@@ -599,17 +599,40 @@ def cmd_simulate(args: argparse.Namespace) -> int:
             await buyer.prepare()
 
             mint = Pubkey.from_string(args.mint) if args.mint else None
-            if mint is None:
+            payer = Pubkey.from_string(args.payer) if args.payer else None
+
+            if mint is None or payer is None:
                 print("Finding a live pump.fun coin to simulate against...")
-                mint = await find_recent_mint(rpc)
+                found_mint, found_buyer = await find_recent_buyer(rpc)
+                mint = mint or found_mint
                 if mint is None:
                     print("Could not find one. Pass --mint <address> explicitly.")
                     return 1
 
+                if payer is None:
+                    # An account that has never received SOL does not exist, and
+                    # Solana rejects a nonexistent fee payer before running
+                    # anything — so simulating as ourselves would tell us nothing
+                    # about the instruction. Borrow a real buyer instead; the
+                    # instruction is identical and simulation mutates nothing.
+                    balance = await rpc.get_balance(str(keypair.pubkey()))
+                    if balance == 0 and found_buyer is not None:
+                        payer = found_buyer
+
             print(f"wallet         {keypair.pubkey()}")
             print(f"mint           {mint}")
+            if payer is not None and payer != keypair.pubkey():
+                print(f"payer          {payer}")
+                print(
+                    "               (your wallet is unfunded, so it does not exist "
+                    "on chain and\n"
+                    "                cannot pay. Simulating as a real recent buyer "
+                    "instead — this\n"
+                    "                tests the instruction, touches nothing, and "
+                    "spends nothing.)"
+                )
 
-            result = await simulate_buy(rpc, buyer, mint)
+            result = await simulate_buy(rpc, buyer, mint, payer=payer)
             print(f"token program  {result.token_program} ({result.token_program_name})")
             print(f"buy amount     {cfg.buy.amount_sol} SOL")
             if result.units_consumed is not None:
@@ -627,7 +650,8 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 
             print(f"VERDICT: {result.verdict()}")
             await buyer.close()
-            return 0 if result.ok or "VALIDATED" in result.verdict() else 1
+            verdict = result.verdict()
+            return 0 if result.ok or "VALIDATED" in verdict else 1
 
     try:
         return asyncio.run(run())
@@ -797,6 +821,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_config(sim)
     sim.add_argument(
         "--mint", help="coin to simulate buying (default: pick a recent live one)"
+    )
+    sim.add_argument(
+        "--payer",
+        help="simulate as this address instead of your wallet (needed when "
+        "your wallet has never been funded)",
     )
     sim.set_defaults(func=cmd_simulate)
 

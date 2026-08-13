@@ -22,7 +22,10 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from solders.hash import Hash
+from solders.message import MessageV0
 from solders.pubkey import Pubkey
+from solders.signature import Signature
+from solders.transaction import VersionedTransaction
 
 from .buyer import Buyer
 from .constants import PUMP_FUN_PROGRAM, TOKEN_PROGRAMS
@@ -38,6 +41,7 @@ log = get_logger("sniper.simulate")
 class SimulationResult:
     mint: Pubkey
     token_program: Optional[Pubkey] = None
+    payer: Optional[Pubkey] = None
     err: Optional[object] = None
     logs: list[str] = field(default_factory=list)
     units_consumed: Optional[int] = None
@@ -65,6 +69,18 @@ class SimulationResult:
             return "SUCCESS — the buy executed against real chain state"
 
         blob = " ".join(self.logs).lower() + " " + str(self.err).lower()
+
+        if "accountnotfound" in blob.replace(" ", "") and not self.logs:
+            return (
+                "INCONCLUSIVE — the fee payer account does not exist on chain, so "
+                "nothing ran.\n"
+                "    A wallet that has never received SOL is not merely empty, it "
+                "is absent, and\n"
+                "    Solana rejects it as fee payer before executing anything "
+                "(note: 0 compute units).\n"
+                "    Re-run with --payer <a funded address> to test the "
+                "instruction itself."
+            )
 
         structural = {
             "accountnotenoughkeys": "the program wanted more accounts than we sent",
@@ -170,10 +186,87 @@ async def find_recent_mint(rpc: RpcPool, scan_limit: int = 60) -> Optional[Pubke
     return None
 
 
+def build_unsigned_for_simulation(
+    buyer: Buyer,
+    event: LaunchEvent,
+    quote,
+    blockhash: Hash,
+    payer: Pubkey,
+    token_program: Optional[Pubkey] = None,
+) -> VersionedTransaction:
+    """Compile the buy for an arbitrary payer, with a placeholder signature.
+
+    Simulation runs with `sigVerify: false`, so a real signature is not needed
+    — which means we can simulate as an address whose key we do not hold. That
+    is what makes it possible to test the instruction with a funded account
+    when our own wallet has never been funded.
+    """
+    instructions = buyer.build_instructions(
+        event, quote, payer=payer, token_program=token_program
+    )
+    message = MessageV0.try_compile(
+        payer=payer,
+        instructions=instructions,
+        address_lookup_table_accounts=[],
+        recent_blockhash=blockhash,
+    )
+    return VersionedTransaction.populate(message, [Signature.default()])
+
+
+async def find_recent_buyer(rpc: RpcPool, scan_limit: int = 60):
+    """A (mint, buyer) pair from a recent successful buy.
+
+    The buyer is guaranteed to exist and hold SOL — they just paid for a
+    transaction — which makes them a usable stand-in payer for a simulation
+    that only needs the account structure to be exercised.
+    """
+    from .verify import _account_keys, _find_buy_instruction
+
+    signatures = await rpc.call(
+        "getSignaturesForAddress",
+        [str(PUMP_FUN_PROGRAM), {"limit": scan_limit, "commitment": "confirmed"}],
+    )
+    for entry in signatures or []:
+        if entry.get("err") is not None:
+            continue
+        try:
+            transaction = await rpc.call(
+                "getTransaction",
+                [
+                    entry["signature"],
+                    {
+                        "encoding": "json",
+                        "commitment": "confirmed",
+                        "maxSupportedTransactionVersion": 0,
+                    },
+                ],
+            )
+        except Exception:
+            continue
+        if not transaction:
+            continue
+        found = _find_buy_instruction(transaction)
+        if found is None:
+            continue
+        indices, _ = found
+        keys = _account_keys(transaction)
+        if len(indices) > 6 and max(indices[2], indices[6]) < len(keys):
+            return keys[indices[2]], keys[indices[6]]
+    return None, None
+
+
 async def simulate_buy(
-    rpc: RpcPool, buyer: Buyer, mint: Pubkey, token_program: Optional[Pubkey] = None
+    rpc: RpcPool,
+    buyer: Buyer,
+    mint: Pubkey,
+    token_program: Optional[Pubkey] = None,
+    payer: Optional[Pubkey] = None,
 ) -> SimulationResult:
-    """Build our real buy for `mint` and simulate it against mainnet."""
+    """Build our real buy for `mint` and simulate it against mainnet.
+
+    `payer` overrides who pays, for the case where our own wallet does not
+    exist on chain yet. The instruction is identical either way.
+    """
     resolved_token_program, event = await resolve_mint(rpc, mint)
     token_program = token_program or resolved_token_program
 
@@ -187,9 +280,14 @@ async def simulate_buy(
     blockhash = buyer.blockhash.blockhash or Hash.default()
     try:
         quote = buyer.quote(event)
-        transaction, _ = buyer.build_transaction(
-            event, quote, blockhash, token_program=token_program
-        )
+        if payer is None or payer == buyer.pubkey:
+            transaction, _ = buyer.build_transaction(
+                event, quote, blockhash, token_program=token_program
+            )
+        else:
+            transaction = build_unsigned_for_simulation(
+                buyer, event, quote, blockhash, payer, token_program
+            )
     except Exception as exc:
         return SimulationResult(
             mint=mint, token_program=token_program, build_error=repr(exc)
@@ -214,6 +312,7 @@ async def simulate_buy(
     return SimulationResult(
         mint=mint,
         token_program=token_program,
+        payer=payer or buyer.pubkey,
         err=value.get("err"),
         logs=value.get("logs") or [],
         units_consumed=value.get("unitsConsumed"),
