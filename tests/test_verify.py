@@ -337,3 +337,90 @@ def test_summarise_groups_samples_by_shape():
     assert "2 x" in text and "16 accounts" in text
     assert "1 x" in text and "12 accounts" in text
     assert "matches our encoding" in text and "does NOT match" in text
+
+
+# --- identifying unknown accounts ------------------------------------------
+
+
+def test_unidentified_accounts_collects_positions_we_have_no_role_for():
+    from solders.pubkey import Pubkey as _P
+
+    from sniper.verify import unidentified_accounts
+
+    extra_a, extra_b = _P.new_unique(), _P.new_unique()
+    observed, data = make_buy()
+    report = compare_against_observed(
+        list(observed) + [extra_a, extra_b], data, BuyLayout.CURRENT
+    )
+    assert unidentified_accounts([report]) == [extra_a, extra_b]
+
+
+def test_unidentified_accounts_dedupes_across_samples():
+    """The same extra account in every sample should be looked up once."""
+    from solders.pubkey import Pubkey as _P
+
+    from sniper.verify import unidentified_accounts
+
+    shared = _P.new_unique()
+    reports = []
+    for _ in range(3):
+        observed, data = make_buy()
+        reports.append(
+            compare_against_observed(
+                list(observed) + [shared, _P.new_unique()], data, BuyLayout.CURRENT
+            )
+        )
+    found = unidentified_accounts(reports)
+    assert found.count(shared) == 1
+    assert len(found) == 4  # one shared + three distinct
+
+
+def test_account_description_names_an_anchor_type_from_its_discriminator():
+    import hashlib
+
+    from solders.pubkey import Pubkey as _P
+
+    from sniper.verify import AccountDescription, _anchor_account_discriminators
+
+    disc = hashlib.sha256(b"account:MintVolumeAccumulator").digest()[:8]
+    assert _anchor_account_discriminators()[disc] == "MintVolumeAccumulator"
+
+    described = AccountDescription(
+        pubkey=_P.new_unique(),
+        exists=True,
+        owner=str(PUMP_FUN_PROGRAM),
+        data_len=48,
+        discriminator=disc,
+        guessed_type="MintVolumeAccumulator",
+    ).describe()
+    assert "pump.fun program" in described
+    assert "MintVolumeAccumulator" in described
+
+
+def test_account_description_reports_a_missing_account_as_init():
+    """An account the instruction creates does not exist beforehand."""
+    from solders.pubkey import Pubkey as _P
+
+    from sniper.verify import AccountDescription
+
+    described = AccountDescription(pubkey=_P.new_unique(), exists=False).describe()
+    assert "does not exist yet" in described
+    assert "init" in described
+
+
+def test_unknown_discriminator_is_shown_raw_not_guessed():
+    """Better to print the bytes than to assert a type we did not match."""
+    from solders.pubkey import Pubkey as _P
+
+    from sniper.verify import AccountDescription
+
+    described = AccountDescription(
+        pubkey=_P.new_unique(),
+        exists=True,
+        owner="TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+        data_len=165,
+        discriminator=bytes.fromhex("1122334455667788"),
+    ).describe()
+    assert "Token-2022" in described
+    assert "1122334455667788" in described
+    assert "anchor type" not in described

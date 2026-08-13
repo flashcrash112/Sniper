@@ -44,7 +44,13 @@ from .matcher import Matcher
 from .metadata import MetadataFetcher, TokenMetadata
 from .pumpfun import LaunchEvent
 from .rpc import RpcError, RpcPool
-from .verify import format_report, summarise, verify_layout
+from .verify import (
+    describe_accounts,
+    format_report,
+    summarise,
+    unidentified_accounts,
+    verify_layout,
+)
 from .safety import KillSwitch, SpendLedger, clear_kill_switch
 
 log = get_logger("sniper")
@@ -509,6 +515,12 @@ def cmd_verify_layout(args: argparse.Namespace) -> int:
             )
             reports, stats = await verify_layout(rpc, cfg.buy.layout, samples=args.samples)
 
+            # Anything at a position we have no role for gets looked up, since
+            # its owner program and Anchor discriminator identify it far more
+            # reliably than guessing at PDA seeds.
+            unknown = unidentified_accounts(reports)
+            descriptions = await describe_accounts(rpc, unknown) if unknown else []
+
         if not args.quiet:
             for index, report in enumerate(reports, 1):
                 print(f"Sample {index}/{len(reports)}")
@@ -523,6 +535,19 @@ def cmd_verify_layout(args: argparse.Namespace) -> int:
         )
         print(summarise(reports))
         print()
+
+        if descriptions:
+            print("Unidentified accounts (positions we do not encode):")
+            print()
+            for description in descriptions:
+                print(f"  {description.pubkey}")
+                print(f"    {description.describe()}")
+            print()
+            print(
+                "  Send this section to whoever is maintaining the account list —\n"
+                "  the owner and anchor type are usually enough to name them."
+            )
+            print()
 
         good = [r for r in reports if r.ok]
         if len(good) == len(reports):

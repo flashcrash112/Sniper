@@ -500,3 +500,114 @@ def format_report(report: LayoutReport) -> str:
     for note in report.notes:
         lines.append(f"\n  ! {note}")
     return "\n".join(lines)
+
+
+# --- Identifying unknown accounts ------------------------------------------
+
+# Anchor derives an account's first 8 bytes from sha256("account:<StructName>").
+# Hashing plausible names forward and matching against what is actually on
+# chain identifies an account type without needing the IDL.
+_CANDIDATE_ACCOUNT_NAMES = [
+    "Global", "BondingCurve", "GlobalVolumeAccumulator", "UserVolumeAccumulator",
+    "FeeConfig", "MintVolumeAccumulator", "CreatorVault", "LastWithdraw",
+    "FeeTier", "GlobalConfig", "PoolAuthority", "VolumeAccumulator",
+    "MintAuthority", "FeeRecipient", "Pool", "Position", "Config", "Vault",
+    "TokenVault", "FeeVault", "Treasury", "Referral", "ReferralAccount",
+    "UserStats", "MintStats", "Stats", "Escrow", "Incentive", "Rewards",
+    "UserRewards", "MigrationConfig", "AdminConfig", "AuthorityConfig",
+]
+
+
+def _anchor_account_discriminators() -> dict[bytes, str]:
+    import hashlib
+
+    return {
+        hashlib.sha256(f"account:{name}".encode()).digest()[:8]: name
+        for name in _CANDIDATE_ACCOUNT_NAMES
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class AccountDescription:
+    """What an on-chain account actually is, for an address we cannot derive."""
+
+    pubkey: Pubkey
+    exists: bool
+    owner: Optional[str] = None
+    data_len: int = 0
+    discriminator: Optional[bytes] = None
+    guessed_type: Optional[str] = None
+    executable: bool = False
+
+    def describe(self) -> str:
+        if not self.exists:
+            return (
+                "does not exist yet — created by the instruction, so it is an "
+                "`init` account (likely a per-something accumulator)"
+            )
+        owner = _KNOWN_OWNERS.get(self.owner, self.owner)
+        parts = [f"owner={owner}", f"{self.data_len} bytes"]
+        if self.executable:
+            parts.append("executable (it is a program)")
+        if self.guessed_type:
+            parts.append(f"anchor type={self.guessed_type}")
+        elif self.discriminator:
+            parts.append(f"discriminator={self.discriminator.hex()}")
+        return ", ".join(parts)
+
+
+_KNOWN_OWNERS = {
+    str(PUMP_FUN_PROGRAM): "pump.fun program",
+    str(PUMP_FUN_FEE_PROGRAM): "pump.fun fee program",
+    str(SYSTEM_PROGRAM): "system program",
+    str(TOKEN_PROGRAM): "SPL Token",
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": "Token-2022",
+}
+
+
+async def describe_accounts(
+    rpc: RpcPool, pubkeys: Sequence[Pubkey]
+) -> list[AccountDescription]:
+    """Look up accounts we could not derive and report what they are.
+
+    The owner program and the Anchor discriminator together usually identify an
+    account outright, which beats guessing at PDA seeds — and unlike seed
+    guessing, a wrong answer is impossible rather than merely unlikely.
+    """
+    if not pubkeys:
+        return []
+
+    values = await rpc.get_multiple_accounts([str(p) for p in pubkeys])
+    known = _anchor_account_discriminators()
+    out = []
+    for pubkey, value in zip(pubkeys, values):
+        if not value:
+            out.append(AccountDescription(pubkey=pubkey, exists=False))
+            continue
+        try:
+            raw = base64.b64decode(value["data"][0])
+        except Exception:
+            raw = b""
+        disc = raw[:8] if len(raw) >= 8 else None
+        out.append(
+            AccountDescription(
+                pubkey=pubkey,
+                exists=True,
+                owner=value.get("owner"),
+                data_len=len(raw),
+                discriminator=disc,
+                guessed_type=known.get(disc) if disc else None,
+                executable=bool(value.get("executable")),
+            )
+        )
+    return out
+
+
+def unidentified_accounts(reports: Sequence[LayoutReport]) -> list[Pubkey]:
+    """Every distinct account sitting at a position we have no role for."""
+    seen: dict[str, Pubkey] = {}
+    for report in reports:
+        for check in report.checks:
+            if check.role.startswith("unknown[") and str(check.observed) not in seen:
+                seen[str(check.observed)] = check.observed
+    return list(seen.values())

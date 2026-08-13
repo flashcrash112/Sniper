@@ -243,6 +243,16 @@ class RpcPool:
             return None
         return base64.b64decode(value["data"][0])
 
+    async def get_multiple_accounts(self, pubkeys: Sequence[str]) -> list[Optional[dict]]:
+        """Fetch several accounts in one call. Missing accounts come back None."""
+        if not pubkeys:
+            return []
+        result = await self.call(
+            "getMultipleAccounts",
+            [list(pubkeys), {"encoding": "base64", "commitment": "confirmed"}],
+        )
+        return (result or {}).get("value") or []
+
     async def get_latest_blockhash(self, commitment: str = "confirmed") -> tuple[str, int]:
         result = await self.call("getLatestBlockhash", [{"commitment": commitment}])
         value = result["value"]
