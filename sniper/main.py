@@ -30,7 +30,7 @@ import aiohttp
 from .buyer import Buyer, BuyOutcome
 from .config import Config, ConfigError, load_config
 from .constants import LAMPORTS_PER_SOL, PUMP_FUN_PROGRAM
-from .idl import PROGRAMS, fetch_idl, idl_address, summarise_idl
+from .idl import PROGRAMS, fetch_idl, find_error, format_error, idl_address, summarise_idl
 from .simulate import find_recent_buyer, simulate_buy
 from .exit import ExitManager, Position
 from .jito import JitoClient
@@ -686,6 +686,10 @@ def cmd_idl(args: argparse.Namespace) -> int:
             )
             return 1
 
+        if args.error is not None:
+            print(format_error(args.error, find_error(idl, args.error)))
+            return 0 if find_error(idl, args.error) is not None else 1
+
         print(summarise_idl(idl))
         if args.dump:
             Path(args.dump).write_text(json.dumps(idl, indent=2))
@@ -816,6 +820,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="which program's IDL to read (default: pump)",
     )
     idl.add_argument("--dump", help="also write the full IDL JSON to this path")
+    idl.add_argument(
+        "--error",
+        type=int,
+        metavar="CODE",
+        help="look up a Custom(CODE) program error instead of printing accounts "
+        "(e.g. the 6062 in InstructionError [3, {\"Custom\": 6062}])",
+    )
     idl.set_defaults(func=cmd_idl)
 
     sim = sub.add_parser(

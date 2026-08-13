@@ -104,3 +104,51 @@ def test_summary_numbers_the_accounts_so_they_can_be_compared_by_index():
     assert " 0  global" in text
     assert " 4  associatedBondingCurve" in text
     assert "amount: u64" in text
+
+
+# --- error lookup -----------------------------------------------------------
+
+ERROR_SAMPLE = {
+    **SAMPLE,
+    "errors": [
+        {"code": 6000, "name": "NotAuthorized", "msg": "You are not authorized"},
+        {"code": 6062, "name": "TooMuchSolRequired", "msg": "slippage: too much SOL required to buy"},
+    ],
+}
+
+
+def test_find_error_by_code():
+    from sniper.idl import find_error
+
+    error = find_error(ERROR_SAMPLE, 6062)
+    assert error["name"] == "TooMuchSolRequired"
+    assert "slippage" in error["msg"]
+
+
+def test_find_error_missing_code_returns_none():
+    from sniper.idl import find_error
+
+    assert find_error(ERROR_SAMPLE, 9999) is None
+
+
+def test_find_error_on_an_idl_with_no_errors_section():
+    from sniper.idl import find_error
+
+    assert find_error(SAMPLE, 6062) is None
+
+
+def test_format_error_renders_name_and_message():
+    from sniper.idl import find_error, format_error
+
+    text = format_error(6062, find_error(ERROR_SAMPLE, 6062))
+    assert "6062" in text
+    assert "TooMuchSolRequired" in text
+    assert "slippage" in text
+
+
+def test_format_error_for_an_unknown_code_explains_why_not_a_crash():
+    from sniper.idl import format_error
+
+    text = format_error(9999, None)
+    assert "not in this program's IDL" in text
+    assert "9999" in text

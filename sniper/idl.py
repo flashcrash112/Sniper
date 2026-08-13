@@ -115,6 +115,37 @@ def instruction_args(idl: dict, name: str) -> Optional[list[tuple[str, Any]]]:
     return None
 
 
+def find_error(idl: dict, code: int) -> Optional[dict]:
+    """Look up a custom program error by its numeric code.
+
+    Anchor assigns custom errors starting at 6000, in declaration order, and
+    publishes the mapping in the IDL's `errors` array as
+    `{"code": 6000, "name": "...", "msg": "..."}`. A `Custom(N)` value out of
+    `simulateTransaction` or a failed `sendTransaction` is otherwise just a
+    number — this turns it back into the name and message the program author
+    wrote, straight from the program's own description of itself rather than
+    a guess at what a given code "usually" means.
+    """
+    for error in idl.get("errors", []):
+        if error.get("code") == code:
+            return error
+    return None
+
+
+def format_error(code: int, error: Optional[dict]) -> str:
+    if error is None:
+        return (
+            f"error {code} is not in this program's IDL error list.\n"
+            f"    Either it is a framework-level Anchor error (account "
+            f"constraints, discriminator mismatches — not one the program "
+            f"declared itself), or the deployed program has moved on from "
+            f"the IDL version currently published."
+        )
+    name = error.get("name", "?")
+    msg = error.get("msg", "(no message)")
+    return f"{code}  {name}\n    {msg}"
+
+
 def summarise_idl(idl: dict) -> str:
     """Render the parts of an IDL this bot depends on."""
     lines = []
