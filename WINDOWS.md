@@ -109,7 +109,24 @@ reopen it later: press Start and type `Ubuntu`.
 
 ## Steps 2 and 3 — Install everything (one command)
 
-Paste this whole block into the Ubuntu window and press Enter. It installs
+> ### First: make sure you are in Ubuntu, not PowerShell
+>
+> Look at your prompt. This is the single easiest thing to get wrong.
+>
+> | Prompt looks like | Which shell | Bot commands work? |
+> |---|---|---|
+> | `PS C:\Users\you>` | Windows PowerShell | **No** |
+> | `you@DESKTOP-1234:~$` | Ubuntu (Linux) | **Yes** |
+>
+> If you see `PS C:\...`, just type **`wsl`** and press Enter — the prompt
+> switches to Linux in the same window. Or open a fresh one: Start → `Ubuntu`.
+>
+> Pasting Linux commands into PowerShell gives you a wall of red
+> `The token '&&' is not a valid statement separator` errors. Nothing is
+> broken when that happens — the commands simply did not run. Switch to
+> Ubuntu and paste again.
+
+Paste this whole block into the **Ubuntu** window and press Enter. It installs
 everything, downloads the bot, and runs the tests to prove it works.
 
 ```bash
@@ -258,6 +275,7 @@ section of the README before you put real money behind it.
 
 | What you see | What it means |
 |---|---|
+| `The token '&&' is not a valid statement separator` | You are in PowerShell, not Ubuntu. Type `wsl` and press Enter, then paste again |
 | `command not found: python` | The venv is not active. Run `cd ~/sniper && source .venv/bin/activate` |
 | `needs Python 3.11 or newer` | See step 2 — install `python3.12` and rebuild the venv |
 | `accessible to other users` | The bot is on `/mnt/c`. Move it to `~` (see step 3) |
