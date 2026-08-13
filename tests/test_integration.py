@@ -26,6 +26,7 @@ from conftest import make_program_data_log
 from sniper.config import load_config
 from sniper.constants import BUY_IX_DISCRIMINATOR, PUMP_FUN_PROGRAM
 from sniper.keystore import ScryptParams, create_keystore
+from sniper.logging_setup import setup_logging, shutdown_logging
 from sniper.main import Sniper
 
 FEE_RECIPIENT = Pubkey.new_unique()
@@ -239,8 +240,18 @@ def keystore(tmp_path, monkeypatch):
 
 
 async def run_sniper(config_path, dry_run=False, timeout=15, stop_after=None):
-    """Run to completion. `stop_after` trips the kill switch after N seconds."""
+    """Run to completion. `stop_after` trips the kill switch after N seconds.
+
+    Calls setup_logging(), matching cmd_run() in main.py. Skipping this is not
+    a shortcut: with no handler configured, the root logger defaults to
+    WARNING, so every log.info()/log.debug() call in the bot — including the
+    ones fired on the exact path a live match takes — is silently skipped
+    before it ever runs. A bug in what those calls pass as `extra=` (see the
+    "Attempt to overwrite 'name' in LogRecord" incident) is then invisible to
+    every test, and only crashes in production once real logging is on.
+    """
     cfg = load_config(config_path)
+    setup_logging(cfg.logging)
     sniper = Sniper(cfg, dry_run=dry_run)
 
     stopper = None
@@ -256,6 +267,7 @@ async def run_sniper(config_path, dry_run=False, timeout=15, stop_after=None):
     finally:
         if stopper is not None:
             stopper.cancel()
+        shutdown_logging()
     return sniper
 
 

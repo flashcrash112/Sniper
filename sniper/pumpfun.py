@@ -133,7 +133,13 @@ class LaunchEvent:
         return {
             "mint": str(self.mint),
             "symbol": self.symbol,
-            "name": self.name,
+            # Not "name": that key is reserved by logging.LogRecord (it holds
+            # the logger's own name), and passing extra={"name": ...} raises
+            # KeyError("Attempt to overwrite 'name' in LogRecord") the instant
+            # a coin with a matching ticker is seen — a crash that only
+            # surfaces once real logging is configured, so it slips past any
+            # test that skips setup_logging().
+            "coin_name": self.name,
             "uri": self.uri,
             "creator": str(self.creator),
             "slot": self.slot,

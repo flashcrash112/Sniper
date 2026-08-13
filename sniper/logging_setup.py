@@ -28,6 +28,20 @@ _RESERVED = frozenset(
 ) | {"message", "asctime", "taskName"}
 
 
+def safe_extra(fields: dict) -> dict:
+    """Rename any key that collides with a reserved LogRecord attribute.
+
+    `logging.Logger.makeRecord` raises `KeyError` the instant `extra` contains
+    a key like "name" or "module" — a crash, not a formatting quirk — and it
+    happens *before* any handler or formatter runs, so `_RESERVED` alone
+    (used only at format time) does not protect against it. Call this at
+    every site that spreads a dynamic dict into `extra=`, since the crash
+    only fires once logging is actually configured to emit that level, which
+    is exactly the case tests are most likely to skip.
+    """
+    return {(f"{k}_" if k in _RESERVED else k): v for k, v in fields.items()}
+
+
 class JsonFormatter(logging.Formatter):
     """One JSON object per line, with everything passed via `extra` merged in."""
 

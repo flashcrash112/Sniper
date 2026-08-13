@@ -42,7 +42,7 @@ from .keystore import (
     read_password,
 )
 from .listener.base import create_listener, probe_listener
-from .logging_setup import get_logger, setup_logging, shutdown_logging
+from .logging_setup import get_logger, safe_extra, setup_logging, shutdown_logging
 from .matcher import Matcher
 from .metadata import MetadataFetcher, TokenMetadata
 from solders.pubkey import Pubkey
@@ -270,7 +270,7 @@ class Sniper:
         # we actually care about, which on a live feed is a handful of events
         # out of thousands.
         if not self.matcher.ticker_matches(event):
-            log.debug("candidate_seen", extra=event.summary())
+            log.debug("candidate_seen", extra=safe_extra(event.summary()))
             return
 
         metadata: Optional[TokenMetadata] = None
@@ -280,12 +280,14 @@ class Sniper:
         result = self.matcher.score(event, metadata)
         log.info(
             "candidate_scored",
-            extra={
-                **event.summary(),
-                **result.to_log(),
-                "metadata_fetch_ms": metadata.fetch_ms if metadata else None,
-                "metadata_twitter": metadata.twitter if metadata else None,
-            },
+            extra=safe_extra(
+                {
+                    **event.summary(),
+                    **result.to_log(),
+                    "metadata_fetch_ms": metadata.fetch_ms if metadata else None,
+                    "metadata_twitter": metadata.twitter if metadata else None,
+                }
+            ),
         )
 
         if not result.matched:
@@ -320,7 +322,9 @@ class Sniper:
 
         log.warning(
             "buy_attempt",
-            extra={**outcome.to_log(), **result.to_log(), **self.ledger.summary()},
+            extra=safe_extra(
+                {**outcome.to_log(), **result.to_log(), **self.ledger.summary()}
+            ),
         )
 
         if outcome.sent:
@@ -376,7 +380,7 @@ class Sniper:
             return
         log.warning(
             "position_closed",
-            extra={"mint": str(outcome.event.mint), **result.to_log()},
+            extra=safe_extra({"mint": str(outcome.event.mint), **result.to_log()}),
         )
 
     async def _drain(self, buyer: Buyer) -> None:
