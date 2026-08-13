@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import sys
@@ -28,7 +29,8 @@ import aiohttp
 
 from .buyer import Buyer, BuyOutcome
 from .config import Config, ConfigError, load_config
-from .constants import LAMPORTS_PER_SOL
+from .constants import LAMPORTS_PER_SOL, PUMP_FUN_PROGRAM
+from .idl import PROGRAMS, fetch_idl, idl_address, summarise_idl
 from .exit import ExitManager, Position
 from .jito import JitoClient
 from .keystore import (
@@ -579,6 +581,41 @@ def cmd_verify_layout(args: argparse.Namespace) -> int:
         shutdown_logging()
 
 
+def cmd_idl(args: argparse.Namespace) -> int:
+    """Read the program's own account list off the chain, if it published one."""
+    cfg = load_config(args.config)
+    setup_logging(cfg.logging)
+
+    async def run() -> int:
+        program = PROGRAMS.get(args.program, PUMP_FUN_PROGRAM)
+        address = idl_address(program)
+        print(f"program      {program}")
+        print(f"idl account  {address}\n")
+
+        async with RpcPool(cfg.rpc.http_url, cfg.rpc.send_urls) as rpc:
+            idl = await fetch_idl(rpc, program)
+
+        if idl is None:
+            print(
+                "No IDL published at that address.\n\n"
+                "That is allowed — publishing is optional, and pump.fun may have\n"
+                "withdrawn theirs. Fall back to `python -m sniper verify-layout`,\n"
+                "which reconstructs the account list from real transactions."
+            )
+            return 1
+
+        print(summarise_idl(idl))
+        if args.dump:
+            Path(args.dump).write_text(json.dumps(idl, indent=2))
+            print(f"\nFull IDL written to {args.dump}")
+        return 0
+
+    try:
+        return asyncio.run(run())
+    finally:
+        shutdown_logging()
+
+
 def cmd_keystore_create(args: argparse.Namespace) -> int:
     path = Path(args.path).expanduser()
     if args.generate:
@@ -685,6 +722,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="only print the summary, not each sample's account table",
     )
     verify.set_defaults(func=cmd_verify_layout)
+
+    idl = sub.add_parser(
+        "idl", help="read the program's account list from its on-chain IDL"
+    )
+    add_config(idl)
+    idl.add_argument(
+        "--program",
+        choices=sorted(PROGRAMS),
+        default="pump",
+        help="which program's IDL to read (default: pump)",
+    )
+    idl.add_argument("--dump", help="also write the full IDL JSON to this path")
+    idl.set_defaults(func=cmd_idl)
 
     kill = sub.add_parser("kill", help="engage or clear the kill switch")
     add_config(kill)
