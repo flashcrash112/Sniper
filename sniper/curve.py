@@ -99,6 +99,54 @@ def strip_fee(state: CurveState, budget_lamports: int) -> int:
     return (budget_lamports * 10_000) // (10_000 + state.total_fee_basis_points)
 
 
+def sol_out_for_tokens(state: CurveState, token_amount: int) -> int:
+    """Curve output in lamports for selling `token_amount` base units.
+
+    The mirror of :func:`tokens_for_sol`: tokens go in, the token side rises,
+    the SOL side falls. Fees are taken out of this on the way to the seller,
+    so :func:`strip_fee` gives the amount actually received.
+    """
+    if token_amount <= 0:
+        return 0
+    return (token_amount * state.virtual_sol_reserves) // (
+        state.virtual_token_reserves + token_amount
+    )
+
+
+def net_sol_from_sale(state: CurveState, token_amount: int) -> int:
+    """Lamports the seller actually receives, after protocol and creator fees."""
+    return strip_fee(state, sol_out_for_tokens(state, token_amount))
+
+
+@dataclass(frozen=True, slots=True)
+class SellQuote:
+    """A resolved sell, ready to be encoded."""
+
+    token_amount: int
+    min_sol_output: int
+    expected_sol_output: int
+
+
+def quote_sell(
+    state: CurveState, token_amount: int, slippage_bps: int
+) -> SellQuote:
+    """Turn a token position into pump.fun `sell` arguments.
+
+    Only one direction of headroom is needed here: we are selling a fixed
+    number of tokens, so the single risk is receiving less SOL than expected.
+    `min_sol_output` is the floor below which the program reverts.
+    """
+    if token_amount <= 0:
+        raise ValueError("token_amount must be positive")
+
+    expected = net_sol_from_sale(state, token_amount)
+    return SellQuote(
+        token_amount=token_amount,
+        min_sol_output=(expected * (10_000 - min(slippage_bps, 10_000))) // 10_000,
+        expected_sol_output=expected,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class BuyQuote:
     """A fully resolved buy, ready to be encoded into instruction data."""

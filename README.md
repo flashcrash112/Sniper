@@ -21,6 +21,14 @@ Four components, one process:
 | **Buyer** | `sniper/buyer.py` | Builds, signs and broadcasts the buy. Every decision it can make ahead of time, it already made |
 | **Safety** | `sniper/safety.py` | Kill switch, spend cap, position limit, structured audit log |
 
+Plus three things that are off by default and opt-in:
+
+| | File | Job |
+|---|---|---|
+| **Layout verifier** | `sniper/verify.py` | Checks our encoded buy against real mainnet buys, before you spend anything |
+| **Jito bundles** | `sniper/jito.py` | Tips a validator directly instead of relying on the priority-fee auction |
+| **Exits** | `sniper/exit.py` | Take-profit / stop-loss / max-hold, priced off the live bonding curve |
+
 Nothing is decided at buy time. The wallet, position size, slippage and
 priority fee are fixed in config before the process starts; the only inputs at
 match time are the mint and its creator.
@@ -63,6 +71,7 @@ export HELIUS_API_KEY=...
 export SNIPER_KEYSTORE_PASSWORD=...
 
 python -m sniper check          # validates config, endpoints, quote, balance
+python -m sniper verify-layout  # checks our buy encoding against real mainnet buys
 python -m sniper run --dry-run  # watch it work without spending anything
 python -m sniper run            # live
 ```
@@ -97,6 +106,44 @@ pip install 'grpcio-tools>=1.60'
 
 All three backends reconnect on their own with jittered exponential backoff. A
 dropped socket produces a gap in events, never a stopped bot.
+
+---
+
+## Verifying the buy layout before you spend anything
+
+pump.fun is upgradeable and its `buy` account list has grown several times. The
+usual way to discover it has moved again is a failed transaction — you pay the
+priority fee and lose the launch.
+
+Instead:
+
+```bash
+python -m sniper verify-layout
+```
+
+This pulls recent **successful** pump.fun buys off mainnet — ones other people
+paid for — decodes them, and checks them position by position against what this
+bot would encode. Two read-only RPC calls, nothing signed, nothing spent.
+
+```
+  #  role                         status    account
+ --  ---------------------------- --------- --------------------------------------------
+  0  global                       ok        4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf
+  3  bonding_curve                ok        7tyWxaNjfzasEtst6pkeV5NYRPGDt7yh89ktWtNzcPhC
+  9  creator_vault                ?         A3EPUWUo6XwnUtCcmTWojzeSBXCrkrvEggpCWD9tRWib
+ 13  user_volume_accumulator      ok        EZfdFRVwY4dg1qjrrqwnbcggPQAbftAQMoE3iQPBHyTV
+...
+PASS — all 3 samples match the 'current' layout this bot encodes.
+```
+
+`ok` means we re-derived that account independently (PDA, ATA or program ID)
+and it landed where we put it. `?` means it is not derivable — the fee
+recipient, the mint, the buyer — so it is reported but not judged. A
+`MISMATCH`, an unexpected account count, or a layout that disagrees with your
+config all fail the check and print what was expected.
+
+**Run this before every live session.** It is the cheapest possible answer to
+"is the on-chain program still what this code thinks it is".
 
 ---
 
@@ -249,6 +296,60 @@ records what was received rather than what was hoped for.
 
 ---
 
+## Landing the transaction: Jito bundles
+
+Priority fees put you in the same auction as everyone else. A Jito bundle pays
+a validator directly and reaches the leader over Jito's own path, which on a
+contested launch moves your fill rate more than anything in this codebase.
+
+```toml
+[jito]
+enabled = true
+block_engine_url = "https://frankfurt.mainnet.block-engine.jito.wtf"
+tip_lamports = 1000000
+also_send_rpc = true
+```
+
+The tip is a SOL transfer appended to **the same transaction** as the buy, so
+if the bundle is not selected, the tip is not paid. `also_send_rpc` broadcasts
+normally at the same time, so a bundle that loses still has the ordinary path
+to fall back on; the two go out concurrently, not in sequence.
+
+Costs, plainly: the tip is spent on every attempt that lands, exactly like a
+priority fee, and it counts against `max_total_spend_sol`. Pick the block
+engine nearest your VPS.
+
+---
+
+## Exits
+
+Off by default. The bot's job as configured is to buy; selling on a schedule
+you have not thought about is its own way to lose money. When you do want it:
+
+```toml
+[exit]
+enabled = true
+take_profit_pct = 200.0   # sell at 2x cost
+stop_loss_pct = 50.0      # sell if it halves
+max_hold_s = 300.0        # sell after 5 minutes regardless
+```
+
+Once a buy confirms, the position is monitored by polling its bonding curve.
+Value is what the curve would **actually pay right now**, net of fees and
+including the price impact of selling the whole position — not a quoted index
+price. Triggers are checked stop-loss first, then take-profit, then max-hold.
+
+Two behaviours worth knowing:
+
+- The sell is re-quoted against the token balance the wallet actually holds,
+  not the amount the buy quoted. Selling tokens you do not have reverts the
+  whole transaction.
+- If the curve **completes and migrates** to a DEX, pump.fun sells revert. The
+  monitor detects this, logs it and stops rather than retrying against an exit
+  that no longer exists. Getting out from there is a manual job on the DEX.
+
+---
+
 ## Running it as a service
 
 ```ini
@@ -313,7 +414,7 @@ pip install pytest pytest-asyncio
 python -m pytest
 ```
 
-105 tests, ~5 s. Covers bonding-curve math and slippage behaviour (including
+153 tests, ~5 s. Covers bonding-curve math and slippage behaviour (including
 that a buy survives a small frontrun and correctly reverts on a large one),
 event parsing against synthetic borsh payloads, matcher scoring and Twitter URL
 normalisation, keystore round-trips and tamper detection, config validation, and
@@ -331,12 +432,16 @@ stops a quiet feed promptly.
 
 - **Not verified against mainnet.** The transaction structure is asserted in
   tests and the discriminators and PDAs are checked against known mainnet
-  values, but no buy from this code has been landed on-chain. Run `--dry-run`
-  first, then a live run with a small `amount_sol`, and read the `buy_result`
-  log before trusting it with size.
+  values, but no buy from this code has been landed on-chain. Run
+  `verify-layout` (which does compare against real mainnet transactions), then
+  `--dry-run`, then a live run with a small `amount_sol`, and read the
+  `buy_result` log before trusting it with size.
 - **Landing in the next block is not guaranteed.** Priority fee, VPS location
   and RPC quality decide that, and you are competing with people running
   colocated infrastructure and staked connections. This code removes the
   software latency; it cannot remove the network.
-- **No sell side.** It buys and stops. Exits are yours to handle.
+- **Exits are best-effort.** `[exit]` handles take-profit, stop-loss and
+  max-hold against the bonding curve, but it cannot save you from a curve that
+  migrates to a DEX (it stops and says so) or from there being no liquidity to
+  sell into. It is not a guaranteed stop.
 - **Twitter matching proves a claim, not ownership** — see above.

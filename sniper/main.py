@@ -28,6 +28,8 @@ import aiohttp
 from .buyer import Buyer, BuyOutcome
 from .config import Config, ConfigError, load_config
 from .constants import LAMPORTS_PER_SOL
+from .exit import ExitManager, Position
+from .jito import JitoClient
 from .keystore import (
     KeystoreError,
     create_keystore,
@@ -41,6 +43,7 @@ from .matcher import Matcher
 from .metadata import MetadataFetcher, TokenMetadata
 from .pumpfun import LaunchEvent
 from .rpc import RpcError, RpcPool
+from .verify import format_report, verify_layout
 from .safety import KillSwitch, SpendLedger, clear_kill_switch
 
 log = get_logger("sniper")
@@ -62,6 +65,8 @@ class Sniper:
         self.fired = 0
         self._pending: list[asyncio.Task] = []
         self._started = time.monotonic()
+        self.exit_manager: Optional[ExitManager] = None
+        self.keypair = None
 
     async def run(self) -> int:
         cfg = self.cfg
@@ -82,6 +87,12 @@ class Sniper:
         ) as rpc:
             await rpc.warm()
 
+            jito_client: Optional[JitoClient] = None
+            if cfg.jito.enabled:
+                jito_client = JitoClient(cfg.jito.block_engine_url)
+                await jito_client.__aenter__()
+                await jito_client.warm()
+
             buyer = Buyer(
                 keypair=keypair,
                 rpc=rpc,
@@ -89,9 +100,12 @@ class Sniper:
                 rpc_cfg=cfg.rpc,
                 safety_cfg=cfg.safety,
                 dry_run=self.dry_run,
+                jito=jito_client,
+                jito_cfg=cfg.jito if cfg.jito.enabled else None,
             )
             await buyer.prepare()
             await self._check_balance(rpc, buyer)
+            self.keypair = keypair
 
             fetcher: Optional[MetadataFetcher] = None
             if self.matcher.needs_metadata():
@@ -113,9 +127,24 @@ class Sniper:
                     "slippage_bps": cfg.buy.slippage_bps,
                     "priority_fee_microlamports": cfg.buy.priority_fee_microlamports,
                     "kill_switch_file": str(cfg.safety.kill_switch_file),
+                    "jito": cfg.jito.enabled,
+                    "jito_tip_lamports": cfg.jito.tip_lamports if cfg.jito.enabled else None,
+                    "exit_enabled": cfg.exit.enabled,
                     **self.ledger.summary(),
                 },
             )
+
+            if cfg.exit.enabled:
+                self.exit_manager = ExitManager(
+                    keypair=keypair,
+                    rpc=rpc,
+                    blockhash=buyer.blockhash,
+                    cfg=cfg.exit,
+                    fee_recipient=buyer.fee_recipient,
+                    base_curve=buyer.initial_curve,
+                    layout=cfg.buy.layout,
+                    dry_run=self.dry_run,
+                )
 
             try:
                 await self._consume(buyer, fetcher)
@@ -123,6 +152,8 @@ class Sniper:
                 await self._drain(buyer)
                 if fetcher is not None:
                     await fetcher.__aexit__(None, None, None)
+                if jito_client is not None:
+                    await jito_client.close()
                 await buyer.close()
                 await self.kill.stop()
 
@@ -286,6 +317,7 @@ class Sniper:
             )
 
     async def _track(self, buyer: Buyer, outcome: BuyOutcome) -> None:
+        """Confirm the buy, then hand the position to the exit manager."""
         try:
             report = await buyer.confirm(outcome)
         except Exception as exc:
@@ -297,16 +329,63 @@ class Sniper:
         level = log.warning if report.get("status") == "confirmed" else log.error
         level("buy_result", extra={**report, "mint": str(outcome.event.mint)})
 
+        if report.get("status") != "confirmed":
+            return
+        if self.exit_manager is None:
+            return
+
+        filled = report.get("tokens_received")
+        if not filled:
+            log.warning(
+                "exit_skipped",
+                extra={
+                    "mint": str(outcome.event.mint),
+                    "reason": "confirmed but no token balance to sell",
+                },
+            )
+            return
+
+        position = Position(
+            mint=outcome.event.mint,
+            creator=outcome.event.creator,
+            associated_user=outcome.associated_user,
+            token_amount=filled,
+            # What the position actually cost, not what it was quoted at.
+            cost_lamports=outcome.quote.expected_sol_cost,
+            opened_at=time.monotonic(),
+        )
+        try:
+            result = await self.exit_manager.monitor(position)
+        except Exception as exc:
+            log.error(
+                "exit_failed",
+                extra={"mint": str(outcome.event.mint), "error": repr(exc)},
+            )
+            return
+        log.warning(
+            "position_closed",
+            extra={"mint": str(outcome.event.mint), **result.to_log()},
+        )
+
     async def _drain(self, buyer: Buyer) -> None:
         """Let in-flight confirmations finish before shutting down."""
         pending = [t for t in self._pending if not t.done()]
         if not pending:
             return
-        log.info("awaiting_confirmations", extra={"count": len(pending)})
+        # With exits enabled a tracking task also holds a position open, so the
+        # drain has to outlast max_hold_s or shutdown would abandon a live
+        # position rather than selling it.
+        timeout = self.cfg.safety.confirm_timeout_s + 5
+        if self.cfg.exit.enabled:
+            timeout += self.cfg.exit.max_hold_s
+
+        log.info(
+            "awaiting_confirmations",
+            extra={"count": len(pending), "timeout_s": round(timeout)},
+        )
         try:
             await asyncio.wait_for(
-                asyncio.gather(*pending, return_exceptions=True),
-                timeout=self.cfg.safety.confirm_timeout_s + 5,
+                asyncio.gather(*pending, return_exceptions=True), timeout=timeout
             )
         except asyncio.TimeoutError:
             log.warning("confirmation_drain_timeout")
@@ -399,6 +478,50 @@ def cmd_check(args: argparse.Namespace) -> int:
         shutdown_logging()
 
 
+def cmd_verify_layout(args: argparse.Namespace) -> int:
+    """Check our encoded buy against real, successful buys from mainnet."""
+    cfg = load_config(args.config)
+    setup_logging(cfg.logging)
+
+    async def verify() -> int:
+        async with RpcPool(cfg.rpc.http_url, cfg.rpc.send_urls) as rpc:
+            print(
+                f"Fetching recent successful pump.fun buys to compare against "
+                f"the {cfg.buy.layout.value!r} layout...\n"
+            )
+            reports = await verify_layout(rpc, cfg.buy.layout, samples=args.samples)
+
+        for index, report in enumerate(reports, 1):
+            print(f"Sample {index}/{len(reports)}")
+            print(format_report(report))
+            print()
+
+        if not reports:
+            print("No comparable transactions found.")
+            return 1
+
+        good = [r for r in reports if r.ok]
+        if len(good) == len(reports):
+            print(
+                f"PASS — all {len(reports)} samples match the {cfg.buy.layout.value!r} "
+                f"layout this bot encodes."
+            )
+            return 0
+
+        print(
+            f"FAIL — {len(reports) - len(good)} of {len(reports)} samples disagree "
+            f"with what we encode.\n"
+            f"Do not run live until this is resolved. See 'Keeping up with program "
+            f"changes' in the README."
+        )
+        return 1
+
+    try:
+        return asyncio.run(verify())
+    finally:
+        shutdown_logging()
+
+
 def cmd_keystore_create(args: argparse.Namespace) -> int:
     path = Path(args.path).expanduser()
     if args.generate:
@@ -478,6 +601,19 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("check", help="validate config and connectivity")
     add_config(check)
     check.set_defaults(func=cmd_check)
+
+    verify = sub.add_parser(
+        "verify-layout",
+        help="compare our encoded buy against real mainnet buys (read-only)",
+    )
+    add_config(verify)
+    verify.add_argument(
+        "--samples",
+        type=int,
+        default=3,
+        help="how many recent buys to check against (default 3)",
+    )
+    verify.set_defaults(func=cmd_verify_layout)
 
     kill = sub.add_parser("kill", help="engage or clear the kill switch")
     add_config(kill)

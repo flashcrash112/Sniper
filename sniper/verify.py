@@ -1,0 +1,359 @@
+"""Verify our encoded `buy` against a real one from mainnet.
+
+The problem this solves: pump.fun is upgradeable, its `buy` account list has
+grown several times, and no unit test can tell you whether the layout in
+`build_buy_instruction` still matches the deployed program. The usual way to
+find out is a failed transaction, which costs a priority fee and a launch.
+
+Instead, pull a recent *successful* buy off the chain — one that somebody else
+paid for — decode it, and check it position by position against what we would
+have built. Two read-only RPC calls, no signing, no spending.
+
+What it actually proves: the discriminator is right, the account count is
+right, and every account whose value we can derive independently (the PDAs,
+the program IDs, the ATAs) sits at the index we put it at. That is the entire
+failure surface of a layout drift.
+"""
+
+from __future__ import annotations
+
+import base64
+from dataclasses import dataclass, field
+from typing import Optional, Sequence
+
+import base58
+from solders.pubkey import Pubkey
+
+from .constants import (
+    BUY_IX_DISCRIMINATOR,
+    EVENT_AUTHORITY,
+    FEE_CONFIG,
+    GLOBAL_ACCOUNT,
+    GLOBAL_VOLUME_ACCUMULATOR,
+    PUMP_FUN_FEE_PROGRAM,
+    PUMP_FUN_PROGRAM,
+    SYSTEM_PROGRAM,
+    TOKEN_PROGRAM,
+)
+from .logging_setup import get_logger
+from .pumpfun import (
+    BuyLayout,
+    derive_associated_token_account,
+    derive_bonding_curve,
+    derive_user_volume_accumulator,
+)
+from .rpc import RpcPool
+
+log = get_logger("sniper.verify")
+
+LAYOUT_ACCOUNT_COUNTS = {BuyLayout.CURRENT: 16, BuyLayout.LEGACY: 12}
+
+
+@dataclass(frozen=True, slots=True)
+class SlotCheck:
+    """One account position, as observed on-chain versus as we would encode it."""
+
+    index: int
+    role: str
+    observed: Pubkey
+    expected: Optional[Pubkey]
+    ok: Optional[bool]
+    """True/False if we could derive the account independently, None if not."""
+
+    @property
+    def status(self) -> str:
+        if self.ok is None:
+            return "?"
+        return "ok" if self.ok else "MISMATCH"
+
+
+@dataclass(frozen=True, slots=True)
+class LayoutReport:
+    signature: str
+    slot: Optional[int]
+    account_count: int
+    data_len: int
+    detected_layout: Optional[BuyLayout]
+    configured_layout: BuyLayout
+    checks: list[SlotCheck] = field(default_factory=list)
+    mint: Optional[Pubkey] = None
+    fee_recipient: Optional[Pubkey] = None
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def mismatches(self) -> list[SlotCheck]:
+        return [c for c in self.checks if c.ok is False]
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.detected_layout is not None
+            and self.detected_layout == self.configured_layout
+            and not self.mismatches
+        )
+
+
+# --- Fetching a reference transaction --------------------------------------
+
+
+async def fetch_recent_buys(
+    rpc: RpcPool, scan_limit: int = 40, want: int = 3
+) -> list[dict]:
+    """Find recent successful pump.fun buys and return their decoded transactions.
+
+    Scans back over the program's recent signatures rather than trusting any
+    single transaction — one sample could be an unusual client, three agreeing
+    is a layout.
+    """
+    signatures = await rpc.call(
+        "getSignaturesForAddress",
+        [str(PUMP_FUN_PROGRAM), {"limit": scan_limit, "commitment": "confirmed"}],
+    )
+    found: list[dict] = []
+    for entry in signatures or []:
+        if entry.get("err") is not None:
+            continue
+        transaction = await rpc.call(
+            "getTransaction",
+            [
+                entry["signature"],
+                {
+                    "encoding": "json",
+                    "commitment": "confirmed",
+                    "maxSupportedTransactionVersion": 0,
+                },
+            ],
+        )
+        if not transaction:
+            continue
+        if _find_buy_instruction(transaction) is not None:
+            found.append(transaction)
+            if len(found) >= want:
+                break
+    return found
+
+
+def _account_keys(transaction: dict) -> list[Pubkey]:
+    """Static keys plus anything resolved from address lookup tables."""
+    message = transaction["transaction"]["message"]
+    keys = [Pubkey.from_string(k) for k in message["accountKeys"]]
+    loaded = (transaction.get("meta") or {}).get("loadedAddresses") or {}
+    keys += [Pubkey.from_string(k) for k in loaded.get("writable", [])]
+    keys += [Pubkey.from_string(k) for k in loaded.get("readonly", [])]
+    return keys
+
+
+def _decode_ix_data(raw: str) -> bytes:
+    """Instruction data is base58 under `encoding: json`."""
+    try:
+        return base58.b58decode(raw)
+    except Exception:
+        try:
+            return base64.b64decode(raw)
+        except Exception:
+            return b""
+
+
+def _find_buy_instruction(transaction: dict) -> Optional[tuple[list[int], bytes]]:
+    """Locate the pump.fun buy among a transaction's instructions."""
+    keys = _account_keys(transaction)
+    message = transaction["transaction"]["message"]
+    meta = transaction.get("meta") or {}
+
+    groups: list[list[dict]] = [message.get("instructions") or []]
+    for inner in meta.get("innerInstructions") or []:
+        groups.append(inner.get("instructions") or [])
+
+    for group in groups:
+        for ix in group:
+            index = ix.get("programIdIndex")
+            if index is None or index >= len(keys):
+                continue
+            if keys[index] != PUMP_FUN_PROGRAM:
+                continue
+            data = _decode_ix_data(ix.get("data", ""))
+            if data[:8] == BUY_IX_DISCRIMINATOR:
+                return ix.get("accounts") or [], data
+    return None
+
+
+# --- Comparison ------------------------------------------------------------
+
+# The roles we expect at each index, in the order `build_buy_instruction`
+# emits them. Positions 12-15 exist only in the current layout.
+_ROLES = [
+    "global",
+    "fee_recipient",
+    "mint",
+    "bonding_curve",
+    "associated_bonding_curve",
+    "associated_user",
+    "user",
+    "system_program",
+    "token_program",
+    "creator_vault",
+    "event_authority",
+    "program",
+    "global_volume_accumulator",
+    "user_volume_accumulator",
+    "fee_config",
+    "fee_program",
+]
+
+
+def compare_against_observed(
+    observed: Sequence[Pubkey],
+    data: bytes,
+    configured_layout: BuyLayout,
+    signature: str = "",
+    slot: Optional[int] = None,
+) -> LayoutReport:
+    """Check an on-chain buy's accounts against what we would have encoded.
+
+    The mint and the buyer come from the observed transaction; everything
+    derivable from them is re-derived here and compared. An account we cannot
+    derive independently (the fee recipient, which is whatever the global
+    account currently says) is recorded but not judged.
+    """
+    count = len(observed)
+    detected = next(
+        (layout for layout, n in LAYOUT_ACCOUNT_COUNTS.items() if n == count), None
+    )
+    notes: list[str] = []
+    if detected is None:
+        notes.append(
+            f"observed {count} accounts, which matches neither the current "
+            f"({LAYOUT_ACCOUNT_COUNTS[BuyLayout.CURRENT]}) nor the legacy "
+            f"({LAYOUT_ACCOUNT_COUNTS[BuyLayout.LEGACY]}) layout — the program "
+            f"has changed and sniper/pumpfun.py needs updating"
+        )
+    elif detected != configured_layout:
+        notes.append(
+            f"chain is using the {detected.value!r} layout but [buy] layout is "
+            f"set to {configured_layout.value!r} — change it"
+        )
+
+    if len(observed) < 7:
+        return LayoutReport(
+            signature=signature,
+            slot=slot,
+            account_count=count,
+            data_len=len(data),
+            detected_layout=detected,
+            configured_layout=configured_layout,
+            notes=notes + ["too few accounts to identify the mint and buyer"],
+        )
+
+    mint = observed[2]
+    user = observed[6]
+
+    # Everything we can independently derive from the mint and the buyer.
+    expectations: dict[int, Pubkey] = {
+        0: GLOBAL_ACCOUNT,
+        3: derive_bonding_curve(mint),
+        4: derive_associated_token_account(derive_bonding_curve(mint), mint),
+        5: derive_associated_token_account(user, mint),
+        7: SYSTEM_PROGRAM,
+        8: TOKEN_PROGRAM,
+        10: EVENT_AUTHORITY,
+        11: PUMP_FUN_PROGRAM,
+    }
+    if count > 12:
+        expectations[12] = GLOBAL_VOLUME_ACCUMULATOR
+        expectations[13] = derive_user_volume_accumulator(user)
+        expectations[14] = FEE_CONFIG
+        expectations[15] = PUMP_FUN_FEE_PROGRAM
+
+    checks = []
+    for index, account in enumerate(observed):
+        role = _ROLES[index] if index < len(_ROLES) else f"unknown[{index}]"
+        expected = expectations.get(index)
+        checks.append(
+            SlotCheck(
+                index=index,
+                role=role,
+                observed=account,
+                expected=expected,
+                ok=None if expected is None else expected == account,
+            )
+        )
+
+    expected_data_len = 24 if detected is BuyLayout.LEGACY else 25
+    if detected is not None and len(data) not in (24, 25):
+        notes.append(
+            f"buy instruction data is {len(data)} bytes; expected 24 (legacy) "
+            f"or 25 (current, with the track_volume Option<bool>)"
+        )
+    elif detected is BuyLayout.CURRENT and len(data) != expected_data_len:
+        notes.append(
+            f"current layout observed with {len(data)}-byte data; we encode "
+            f"{expected_data_len}"
+        )
+
+    return LayoutReport(
+        signature=signature,
+        slot=slot,
+        account_count=count,
+        data_len=len(data),
+        detected_layout=detected,
+        configured_layout=configured_layout,
+        checks=checks,
+        mint=mint,
+        fee_recipient=observed[1],
+        notes=notes,
+    )
+
+
+async def verify_layout(
+    rpc: RpcPool, configured_layout: BuyLayout, samples: int = 3
+) -> list[LayoutReport]:
+    """Fetch recent mainnet buys and check each against our encoding."""
+    transactions = await fetch_recent_buys(rpc, want=samples)
+    if not transactions:
+        raise RuntimeError(
+            "found no recent successful pump.fun buys to compare against — "
+            "check [rpc] http_url, and note that some providers restrict "
+            "getSignaturesForAddress"
+        )
+
+    reports = []
+    for transaction in transactions:
+        found = _find_buy_instruction(transaction)
+        if found is None:
+            continue
+        indices, data = found
+        keys = _account_keys(transaction)
+        observed = [keys[i] for i in indices if 0 <= i < len(keys)]
+        reports.append(
+            compare_against_observed(
+                observed,
+                data,
+                configured_layout,
+                signature=(transaction.get("transaction", {}).get("signatures") or [""])[0],
+                slot=transaction.get("slot"),
+            )
+        )
+    return reports
+
+
+def format_report(report: LayoutReport) -> str:
+    """Render a report as a readable table."""
+    lines = [
+        f"  signature      {report.signature}",
+        f"  slot           {report.slot}",
+        f"  accounts       {report.account_count}"
+        f"  (detected layout: {report.detected_layout.value if report.detected_layout else 'UNKNOWN'})",
+        f"  data           {report.data_len} bytes",
+        "",
+        f"  {'#':>2}  {'role':<28} {'status':<9} account",
+        f"  {'-' * 2}  {'-' * 28} {'-' * 9} {'-' * 44}",
+    ]
+    for check in report.checks:
+        lines.append(
+            f"  {check.index:>2}  {check.role:<28} {check.status:<9} {check.observed}"
+        )
+        if check.ok is False:
+            lines.append(f"      {'':<28} {'':<9} expected {check.expected}")
+    for note in report.notes:
+        lines.append(f"\n  ! {note}")
+    return "\n".join(lines)

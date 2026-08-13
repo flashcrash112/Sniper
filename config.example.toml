@@ -138,6 +138,53 @@ max_positions = 1
 confirm_timeout_s = 30
 
 
+[jito]
+# Submit the buy as a Jito bundle as well as through normal RPC. On a
+# contested launch this matters more than any software tuning — but the tip is
+# spent on every attempt, exactly like a priority fee, so it is off by default.
+enabled = false
+
+# Pick the block engine closest to your VPS:
+#   https://mainnet.block-engine.jito.wtf            (global)
+#   https://frankfurt.mainnet.block-engine.jito.wtf
+#   https://amsterdam.mainnet.block-engine.jito.wtf
+#   https://ny.mainnet.block-engine.jito.wtf
+#   https://tokyo.mainnet.block-engine.jito.wtf
+block_engine_url = "https://frankfurt.mainnet.block-engine.jito.wtf"
+
+# Minimum accepted is 1000. A tip in the 0.001-0.01 SOL range is typical;
+# on a hot launch the winning tips go much higher. Counted against
+# [safety] max_total_spend_sol.
+tip_lamports = 1000000
+
+# Also broadcast normally, so the buy can still land if the bundle is not
+# selected. Costs nothing extra — the tip only leaves the wallet if the
+# transaction lands, and it is in the transaction either way.
+also_send_rpc = true
+
+
+[exit]
+# Automatic selling. Off by default: buying is what you configured this bot
+# for, but selling on a schedule you have not thought about is a good way to
+# turn a win into a loss. Read the values below before flipping this on.
+enabled = false
+
+# Percentages of what the position COST, not of the current price.
+take_profit_pct = 200.0   # sell at 2x
+stop_loss_pct = 50.0      # sell if it halves
+max_hold_s = 300.0        # ...and sell after 5 minutes regardless
+
+# How often to re-read the bonding curve. Below 0.2s you will hit RPC rate
+# limits. Each poll is one getAccountInfo.
+poll_interval_s = 1.0
+
+# Exits are not a latency race, so these are lower than the buy side. But a
+# stop-loss that does not land is not a stop-loss — do not set the fee to zero.
+slippage_bps = 1500
+priority_fee_microlamports = 200000
+compute_unit_limit = 100000
+
+
 [logging]
 level = "INFO"
 json = true

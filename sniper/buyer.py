@@ -35,7 +35,7 @@ from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
-from .config import BuyConfig, RpcConfig, SafetyConfig
+from .config import BuyConfig, JitoConfig, RpcConfig, SafetyConfig
 from .constants import (
     COMPUTE_BUDGET_PROGRAM,
     GLOBAL_ACCOUNT,
@@ -43,6 +43,7 @@ from .constants import (
     PUMP_TOKEN_DECIMALS,
 )
 from .curve import BuyQuote, CurveState, quote_buy
+from .jito import JitoClient, build_tip_instruction
 from .logging_setup import get_logger
 from .pumpfun import (
     BuyAccounts,
@@ -150,6 +151,8 @@ class BuyOutcome:
     endpoint: Optional[str] = None
     associated_user: Optional[Pubkey] = None
     timings_us: dict[str, int] = None  # type: ignore[assignment]
+    bundle_id: Optional[str] = None
+    bundle_error: Optional[str] = None
 
     @property
     def sent(self) -> bool:
@@ -171,6 +174,8 @@ class BuyOutcome:
             "expected_sol_cost": round(
                 self.quote.expected_sol_cost / LAMPORTS_PER_SOL, 9
             ),
+            "bundle_id": self.bundle_id,
+            "bundle_error": self.bundle_error,
             "timings_us": self.timings_us or {},
         }
 
@@ -186,6 +191,8 @@ class Buyer:
         rpc_cfg: RpcConfig,
         safety_cfg: SafetyConfig,
         dry_run: bool = False,
+        jito: Optional["JitoClient"] = None,
+        jito_cfg: Optional[JitoConfig] = None,
     ) -> None:
         self.keypair = keypair
         self.pubkey = keypair.pubkey()
@@ -193,6 +200,8 @@ class Buyer:
         self.cfg = buy_cfg
         self.safety_cfg = safety_cfg
         self.dry_run = dry_run
+        self.jito = jito
+        self.jito_cfg = jito_cfg
 
         self.blockhash = BlockhashCache(rpc, rpc_cfg.blockhash_refresh_ms, rpc_cfg.commitment)
 
@@ -300,6 +309,17 @@ class Buyer:
             ),
         ]
 
+        # The Jito tip must ride in the same transaction as the buy, so that a
+        # bundle which lands pays the tip and one which does not, does not.
+        if self.jito is not None and self.jito_cfg is not None:
+            instructions.append(
+                build_tip_instruction(
+                    self.pubkey,
+                    self.jito_cfg.tip_lamports,
+                    self.jito.next_tip_account(),
+                )
+            )
+
         message = MessageV0.try_compile(
             payer=self.pubkey,
             instructions=instructions,
@@ -365,12 +385,40 @@ class Buyer:
                 timings_us=timings,
             )
 
-        winner, all_results = await self.rpc.send_transaction(body)
+        raw = bytes(transaction)
+        use_jito = self.jito is not None and self.jito_cfg is not None
+        send_rpc = not use_jito or (
+            self.jito_cfg is not None and self.jito_cfg.also_send_rpc
+        )
+
+        # Bundle and ordinary broadcast go out together, not in sequence — the
+        # bundle is the fast path, the RPC send is the fallback if it is not
+        # selected, and serialising them would give away the difference.
+        bundle_task = (
+            asyncio.create_task(self.jito.send_bundle([raw])) if use_jito else None
+        )
+        rpc_task = (
+            asyncio.create_task(self.rpc.send_transaction(body)) if send_rpc else None
+        )
+
+        bundle_id = bundle_error = None
+        if bundle_task is not None:
+            bundle = await bundle_task
+            bundle_id, bundle_error = bundle.bundle_id, bundle.error
+
+        if rpc_task is not None:
+            winner, all_results = await rpc_task
+            self._log_send(winner, all_results)
+        else:
+            winner = SendResult(
+                signature=str(transaction.signatures[0]) if bundle_id else None,
+                endpoint=self.jito_cfg.block_engine_url if self.jito_cfg else "",
+                error=bundle_error,
+            )
+
         t_sent = time.perf_counter_ns()
         timings["send_us"] = (t_sent - t_serialize) // 1000
         timings["total_with_send_us"] = (t_sent - t0) // 1000
-
-        self._log_send(winner, all_results)
 
         return BuyOutcome(
             event=event,
@@ -381,6 +429,8 @@ class Buyer:
             endpoint=winner.endpoint,
             associated_user=associated_user,
             timings_us=timings,
+            bundle_id=bundle_id,
+            bundle_error=bundle_error,
         )
 
     def _log_send(self, winner: SendResult, results: list[SendResult]) -> None:

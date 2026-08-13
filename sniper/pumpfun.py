@@ -34,6 +34,7 @@ from .constants import (
     GLOBAL_VOLUME_ACCUMULATOR,
     PUMP_FUN_FEE_PROGRAM,
     PUMP_FUN_PROGRAM,
+    SELL_IX_DISCRIMINATOR,
     SYSTEM_PROGRAM,
     TOKEN_PROGRAM,
     USER_VOLUME_ACCUMULATOR_SEED,
@@ -431,3 +432,114 @@ def build_buy_instruction(
     return Instruction(
         program_id=PUMP_FUN_PROGRAM, data=bytes(data), accounts=metas
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SellAccounts:
+    """Accounts for a sell. Note the ordering differs from a buy."""
+
+    fee_recipient: Pubkey
+    mint: Pubkey
+    bonding_curve: Pubkey
+    associated_bonding_curve: Pubkey
+    associated_user: Pubkey
+    user: Pubkey
+    creator_vault: Pubkey
+
+
+def build_sell_instruction(
+    accounts: SellAccounts,
+    token_amount: int,
+    min_sol_output: int,
+    layout: BuyLayout = BuyLayout.CURRENT,
+) -> Instruction:
+    """Encode the pump.fun `sell` instruction.
+
+    The account list is *not* the buy list with the tail removed: `sell` puts
+    `creator_vault` at index 8 and `token_program` at 9, where `buy` has them
+    the other way around, and it has no volume accumulators. Getting this wrong
+    fails with a seeds-constraint error that looks like a PDA bug.
+    """
+    data = bytearray(SELL_IX_DISCRIMINATOR)
+    data += struct.pack("<QQ", token_amount, min_sol_output)
+
+    metas = [
+        AccountMeta(GLOBAL_ACCOUNT, is_signer=False, is_writable=False),
+        AccountMeta(accounts.fee_recipient, is_signer=False, is_writable=True),
+        AccountMeta(accounts.mint, is_signer=False, is_writable=False),
+        AccountMeta(accounts.bonding_curve, is_signer=False, is_writable=True),
+        AccountMeta(
+            accounts.associated_bonding_curve, is_signer=False, is_writable=True
+        ),
+        AccountMeta(accounts.associated_user, is_signer=False, is_writable=True),
+        AccountMeta(accounts.user, is_signer=True, is_writable=True),
+        AccountMeta(SYSTEM_PROGRAM, is_signer=False, is_writable=False),
+        AccountMeta(accounts.creator_vault, is_signer=False, is_writable=True),
+        AccountMeta(TOKEN_PROGRAM, is_signer=False, is_writable=False),
+        AccountMeta(EVENT_AUTHORITY, is_signer=False, is_writable=False),
+        AccountMeta(PUMP_FUN_PROGRAM, is_signer=False, is_writable=False),
+    ]
+
+    if layout is BuyLayout.CURRENT:
+        metas += [
+            AccountMeta(FEE_CONFIG, is_signer=False, is_writable=False),
+            AccountMeta(PUMP_FUN_FEE_PROGRAM, is_signer=False, is_writable=False),
+        ]
+
+    return Instruction(program_id=PUMP_FUN_PROGRAM, data=bytes(data), accounts=metas)
+
+
+# --- Bonding curve account -------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BondingCurveState:
+    """The live reserves of one coin's curve, read from its account."""
+
+    virtual_token_reserves: int
+    virtual_sol_reserves: int
+    real_token_reserves: int
+    real_sol_reserves: int
+    token_total_supply: int
+    complete: bool
+    creator: Optional[Pubkey] = None
+
+    def to_curve(self, fee_basis_points: int, creator_fee_basis_points: int) -> CurveState:
+        return CurveState(
+            virtual_token_reserves=self.virtual_token_reserves,
+            virtual_sol_reserves=self.virtual_sol_reserves,
+            real_token_reserves=self.real_token_reserves,
+            fee_basis_points=fee_basis_points,
+            creator_fee_basis_points=creator_fee_basis_points,
+        )
+
+
+def parse_bonding_curve(data: bytes) -> BondingCurveState:
+    """Decode a `BondingCurve` account.
+
+    Layout::
+
+        8   discriminator
+        8   virtual_token_reserves
+        8   virtual_sol_reserves
+        8   real_token_reserves
+        8   real_sol_reserves
+        8   token_total_supply
+        1   complete
+        32  creator          (appended in a later version)
+
+    `complete` means the curve has filled and migrated to a DEX — at which
+    point pump.fun trades on it revert, and any exit has to go through the
+    pool instead.
+    """
+    r = _Reader(data, pos=8)
+    state = dict(
+        virtual_token_reserves=r.u64(),
+        virtual_sol_reserves=r.u64(),
+        real_token_reserves=r.u64(),
+        real_sol_reserves=r.u64(),
+        token_total_supply=r.u64(),
+        complete=bool(r.u8()),
+    )
+    creator = r.pubkey() if r.remaining >= 32 else None
+    return BondingCurveState(**state, creator=creator)

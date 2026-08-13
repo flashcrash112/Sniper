@@ -171,6 +171,39 @@ class BuyConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class JitoConfig:
+    """Bundle submission. Off by default — it costs a tip on every attempt."""
+
+    enabled: bool = False
+    block_engine_url: str = "https://mainnet.block-engine.jito.wtf"
+    tip_lamports: int = 1_000_000
+    also_send_rpc: bool = True
+    """Broadcast normally as well as bundling.
+
+    Belt and braces: if the bundle is not selected, the transaction can still
+    land through the ordinary path. Costs nothing extra — the tip is only
+    charged if the bundle lands.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ExitConfig:
+    """Take-profit / stop-loss / max-hold. Off by default: buying and holding
+    is a decision, but selling on a schedule you did not think about is not."""
+
+    enabled: bool = False
+    take_profit_pct: float = 200.0
+    """Sell when the position is worth this % of what it cost. 200 = 2x."""
+    stop_loss_pct: float = 50.0
+    """Sell when the position falls to this % of what it cost."""
+    max_hold_s: float = 300.0
+    poll_interval_s: float = 1.0
+    slippage_bps: int = 1500
+    priority_fee_microlamports: int = 200_000
+    compute_unit_limit: int = 100_000
+
+
+@dataclass(frozen=True, slots=True)
 class SafetyConfig:
     kill_switch_file: Path
     max_total_spend_sol: float
@@ -200,6 +233,8 @@ class Config:
     buy: BuyConfig
     safety: SafetyConfig
     logging: LoggingConfig
+    jito: JitoConfig = field(default_factory=JitoConfig)
+    exit: ExitConfig = field(default_factory=ExitConfig)
     source_path: Optional[Path] = None
 
 
@@ -339,6 +374,50 @@ def _build(raw: dict, source: Optional[Path]) -> Config:
             f"the priority fee) — the bot could never fire"
         )
 
+    jito_s = section("jito")
+    jito = JitoConfig(
+        enabled=jito_s.bool_("enabled", False),
+        block_engine_url=jito_s.str_(
+            "block_engine_url", "https://mainnet.block-engine.jito.wtf"
+        ),
+        tip_lamports=jito_s.int_("tip_lamports", 1_000_000),
+        also_send_rpc=jito_s.bool_("also_send_rpc", True),
+    )
+    if jito.enabled and jito.tip_lamports < 1_000:
+        raise ConfigError("[jito] tip_lamports must be at least 1000 (Jito's minimum)")
+
+    exit_s = section("exit")
+    exit_cfg = ExitConfig(
+        enabled=exit_s.bool_("enabled", False),
+        take_profit_pct=exit_s.float_("take_profit_pct", 200.0),
+        stop_loss_pct=exit_s.float_("stop_loss_pct", 50.0),
+        max_hold_s=exit_s.float_("max_hold_s", 300.0),
+        poll_interval_s=exit_s.float_("poll_interval_s", 1.0),
+        slippage_bps=exit_s.int_("slippage_bps", 1500),
+        priority_fee_microlamports=exit_s.int_("priority_fee_microlamports", 200_000),
+        compute_unit_limit=exit_s.int_("compute_unit_limit", 100_000),
+    )
+    if exit_cfg.enabled:
+        if exit_cfg.take_profit_pct <= 100:
+            raise ConfigError(
+                "[exit] take_profit_pct must be above 100 (it is a percentage of "
+                "cost, so 200 means 2x)"
+            )
+        if not 0 < exit_cfg.stop_loss_pct < 100:
+            raise ConfigError("[exit] stop_loss_pct must be between 0 and 100")
+        if exit_cfg.poll_interval_s < 0.2:
+            raise ConfigError("[exit] poll_interval_s below 0.2 will hit RPC rate limits")
+
+    # The Jito tip is spent per attempt, so the cap has to cover it too.
+    if jito.enabled:
+        per_buy_cost += jito.tip_lamports
+        if safety.max_total_spend_lamports < per_buy_cost:
+            raise ConfigError(
+                f"[safety] max_total_spend_sol ({max_spend}) is below the cost of a "
+                f"single buy once the Jito tip is included "
+                f"({per_buy_cost / LAMPORTS_PER_SOL:.6f} SOL)"
+            )
+
     log_s = section("logging")
     log_file = log_s.str_("file")
     logging_cfg = LoggingConfig(
@@ -355,5 +434,7 @@ def _build(raw: dict, source: Optional[Path]) -> Config:
         buy=buy,
         safety=safety,
         logging=logging_cfg,
+        jito=jito,
+        exit=exit_cfg,
         source_path=source,
     )
