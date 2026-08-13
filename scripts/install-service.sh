@@ -104,7 +104,7 @@ User=$USER_NAME
 Group=$USER_NAME
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$SECRETS
-ExecStart=$APP_DIR/.venv/bin/python -m sniper run --config $APP_DIR/config.toml
+ExecStart=$APP_DIR/.venv/bin/sniper run --config $APP_DIR/config.toml
 
 # Deliberately no restart. A sniper that restarts itself can buy again after
 # you thought it had stopped; if it died, you want to know why first.
@@ -153,7 +153,7 @@ Three things left, in order:
 
      Or make a fresh one and fund it:
 
-         sudo -u $USER_NAME $APP_DIR/.venv/bin/python -m sniper \\
+         sudo -u $USER_NAME $APP_DIR/.venv/bin/sniper \\
              keystore create $HOME_DIR/keystore.json --generate
 
   ${BOLD}2. Fill in the secrets and the config.${OFF}
@@ -170,11 +170,11 @@ Three things left, in order:
 
          cd $APP_DIR
          sudo -u $USER_NAME env \$(grep -v '^#' $SECRETS | xargs) \\
-             .venv/bin/python -m sniper check
+             .venv/bin/sniper check --config $APP_DIR/config.toml
          sudo -u $USER_NAME env \$(grep -v '^#' $SECRETS | xargs) \\
-             .venv/bin/python -m sniper verify-layout
+             .venv/bin/sniper verify-layout --config $APP_DIR/config.toml
          sudo -u $USER_NAME env \$(grep -v '^#' $SECRETS | xargs) \\
-             .venv/bin/python -m sniper simulate
+             .venv/bin/sniper simulate --config $APP_DIR/config.toml
 
      Only once ${BOLD}simulate${OFF} passes:
 

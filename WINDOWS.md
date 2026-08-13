@@ -162,8 +162,13 @@ window**, run this first:
 cd ~/sniper && source .venv/bin/activate
 ```
 
-You will see `(.venv)` at the start of your prompt when it is active. If a
-command says `No module named sniper`, this is what you forgot.
+You will see `(.venv)` at the start of your prompt when it is active. If
+`sniper` is not found, or you see `No module named sniper`, this is what you
+forgot.
+
+Once activated, `sniper` works from any directory — the setup script installs
+the package, not just its dependencies, and checks that it runs from outside
+its own folder.
 
 ---
 
@@ -172,7 +177,7 @@ command says `No module named sniper`, this is what you forgot.
 This makes a brand new, empty Solana wallet, encrypted with a password.
 
 ```bash
-python -m sniper keystore create ./keystore.json --generate
+sniper keystore create ./keystore.json --generate
 ```
 
 It asks for a password, twice. Typing shows nothing on screen — normal.
@@ -230,7 +235,7 @@ To look at or edit the file later: `nano config.toml`. Arrow keys to move,
 ## Step 7 — See if it all works
 
 ```bash
-python -m sniper check
+sniper check
 ```
 
 This confirms your Helius key works, reads live data from pump.fun, and tells
@@ -240,7 +245,7 @@ output, so it is safe to share if you want help reading it.
 Then:
 
 ```bash
-python -m sniper verify-layout
+sniper verify-layout
 ```
 
 This checks the bot's buy code against real pump.fun purchases happening on
@@ -249,7 +254,7 @@ Solana right now. You want it to say **PASS**.
 Then watch it work, spending nothing:
 
 ```bash
-python -m sniper run --dry-run
+sniper run --dry-run
 ```
 
 You will see live launches streaming past. Press **Ctrl+C** to stop.

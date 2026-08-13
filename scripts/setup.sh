@@ -107,7 +107,18 @@ step "Installing dependencies (this takes a few minutes)"
 ./.venv/bin/python -m pip install --quiet -r requirements.txt \
   || die "dependency install failed — check the error above"
 ./.venv/bin/python -m pip install --quiet pytest pytest-asyncio
+# Editable install of the bot itself. Without this `python -m sniper` only
+# works when the current directory happens to be this one, which breaks every
+# command run from anywhere else. Editable so `git pull` takes effect with no
+# reinstall.
+./.venv/bin/python -m pip install --quiet -e . \
+  || die "could not install the sniper package"
 ok "dependencies installed"
+
+step "Checking the CLI works from anywhere"
+( cd / && "$ROOT/.venv/bin/sniper" --help >/dev/null ) \
+  || die "the sniper command does not work outside its directory"
+ok "'sniper' command available"
 
 # --- Verify ----------------------------------------------------------------
 
@@ -133,7 +144,7 @@ Then, in order:
   1. Create your wallet. It will prompt for a password — typing shows nothing,
      which is normal. Save that password; there is no reset.
 
-        python -m sniper keystore create ./keystore.json --generate
+        sniper keystore create ./keystore.json --generate
 
   2. Get a free API key from https://helius.dev and set it:
 
@@ -146,9 +157,9 @@ Then, in order:
 
   4. Check everything works, then watch it run without spending anything:
 
-        python -m sniper check
-        python -m sniper verify-layout
-        python -m sniper run --dry-run
+        sniper check
+        sniper verify-layout
+        sniper run --dry-run
 
 Full walkthrough: WINDOWS.md
 EOF

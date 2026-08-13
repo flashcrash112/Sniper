@@ -55,10 +55,10 @@ Create the encrypted keystore (never a plaintext key on disk):
 
 ```bash
 # Generate a fresh wallet...
-python -m sniper keystore create ./keystore.json --generate
+sniper keystore create ./keystore.json --generate
 
 # ...or import an existing one (base58 from Phantom, or a solana-keygen JSON array)
-python -m sniper keystore create ./keystore.json
+sniper keystore create ./keystore.json
 ```
 
 The file is written mode `0600` and holds the secret key under AES-256-GCM with
@@ -74,10 +74,10 @@ $EDITOR config.toml
 export HELIUS_API_KEY=...
 export SNIPER_KEYSTORE_PASSWORD=...
 
-python -m sniper check          # validates config, endpoints, quote, balance
-python -m sniper verify-layout  # checks our buy encoding against real mainnet buys
-python -m sniper run --dry-run  # watch it work without spending anything
-python -m sniper run            # live
+sniper check          # validates config, endpoints, quote, balance
+sniper verify-layout  # checks our buy encoding against real mainnet buys
+sniper run --dry-run  # watch it work without spending anything
+sniper run            # live
 ```
 
 Any string in the config may reference an environment variable as
@@ -122,7 +122,7 @@ priority fee and lose the launch.
 Instead:
 
 ```bash
-python -m sniper verify-layout
+sniper verify-layout
 ```
 
 This pulls recent **successful** pump.fun buys off mainnet — ones other people
@@ -266,8 +266,8 @@ different program.
 **Kill switch.** Two independent triggers:
 
 ```bash
-python -m sniper kill              # touch the flag file; halts within 200 ms
-python -m sniper kill --clear      # remove it
+sniper kill              # touch the flag file; halts within 200 ms
+sniper kill --clear      # remove it
 kill -TERM <pid>                   # stop trading and exit
 kill -USR1 <pid>                   # stop trading, stay up to report in-flight fills
 ```
@@ -368,7 +368,7 @@ User=sniper
 WorkingDirectory=/opt/sniper
 Environment=HELIUS_API_KEY=...
 EnvironmentFile=/etc/sniper/secrets.env   # SNIPER_KEYSTORE_PASSWORD, mode 0600
-ExecStart=/opt/sniper/.venv/bin/python -m sniper run --config /opt/sniper/config.toml
+ExecStart=/opt/sniper/.venv/bin/sniper run --config /opt/sniper/config.toml
 Restart=no
 Nice=-10
 
@@ -397,7 +397,7 @@ If buys start failing with `AccountNotEnoughKeys`, `ConstraintSeeds` or
 `build_buy_instruction` in `sniper/pumpfun.py`, and the discriminators and PDA
 seeds it depends on are all in `sniper/constants.py`.
 
-`python -m sniper check` prints the fee recipient and curve parameters it read
+`sniper check` prints the fee recipient and curve parameters it read
 from the chain, which is the fastest way to confirm your view of the program is
 still current.
 

@@ -81,7 +81,7 @@ Plan names and feature tiers move around. Instead of guessing which tier
 includes `transactionSubscribe`, point the config at Atlas and ask:
 
 ```bash
-python -m sniper check
+sniper check
 ```
 
 The feed probe connects, subscribes, and waits for real pump.fun launches:
@@ -152,7 +152,7 @@ pip install 'grpcio-tools>=1.60'
 are willing to lose:
 
 ```bash
-python -m sniper keystore create /opt/sniper/keystore.json --generate
+sniper keystore create /opt/sniper/keystore.json --generate
 ```
 
 It prompts for the password twice. Do not `export` it here — an interactive
@@ -175,7 +175,7 @@ For a 0.25 SOL position at 10000000 µlam/CU, that is about **0.254 SOL**:
 0.000005  base fee
 ```
 
-`python -m sniper check` prints these for your exact settings — trust it over
+`sniper check` prints these for your exact settings — trust it over
 arithmetic you did by hand. Send a little over, not a lot over: the wallet
 balance is the only limit that is not enforced by software you are trusting.
 
@@ -229,7 +229,7 @@ Then check it:
 
 ```bash
 source /etc/sniper/secrets.env && export SNIPER_KEYSTORE_PASSWORD HELIUS_API_KEY
-python -m sniper check
+sniper check
 ```
 
 This reads the pump.fun `global` account off-chain, prints the fee recipient,
@@ -244,7 +244,7 @@ depends on it.
 This is the step people skip and regret.
 
 ```bash
-python -m sniper run --dry-run --config config.toml
+sniper run --dry-run --config config.toml
 ```
 
 Leave it running for at least an hour against the live feed. You are checking
@@ -260,7 +260,7 @@ three things:
 To watch it in a readable form:
 
 ```bash
-python -m sniper run --dry-run 2>&1 | jq -r \
+sniper run --dry-run 2>&1 | jq -r \
   'select(.event=="candidate_scored") | "\(.symbol)\t\(.confidence)\t\(.matched)\t\(.metadata_twitter)"'
 ```
 
@@ -286,7 +286,7 @@ User=sniper
 Group=sniper
 WorkingDirectory=/opt/sniper/app
 EnvironmentFile=/etc/sniper/secrets.env
-ExecStart=/opt/sniper/app/.venv/bin/python -m sniper run --config /opt/sniper/app/config.toml
+ExecStart=/opt/sniper/app/.venv/bin/sniper run --config /opt/sniper/app/config.toml
 Restart=no
 Nice=-10
 LimitNOFILE=65535
@@ -344,12 +344,12 @@ Only raise `amount_sol` after you have seen one confirmed fill.
 
 ```bash
 # Halt immediately — works whether or not the feed is busy
-python -m sniper kill --config /opt/sniper/app/config.toml
+sniper kill --config /opt/sniper/app/config.toml
 sudo systemctl stop sniper          # or this
 kill -USR1 $(pgrep -f 'sniper run') # stop trading, stay up to report in-flight fills
 
 # Clear the flag before the next run — a leftover KILL file is a hard stop at startup
-python -m sniper kill --clear --config /opt/sniper/app/config.toml
+sniper kill --clear --config /opt/sniper/app/config.toml
 ```
 
 **Practise the kill switch before you need it.** Run it once against a dry run
@@ -374,7 +374,7 @@ already size-capped at 64 MB × 5 files, but it is also your only audit trail.
 - [ ] `python -m pytest -q` passes on the box
 - [ ] Burner wallet, funded with only what you will risk
 - [ ] Keystore is mode 0600; password in `/etc/sniper/secrets.env`, mode 0600
-- [ ] `python -m sniper check` succeeds and prints a sane fee recipient
+- [ ] `sniper check` succeeds and prints a sane fee recipient
 - [ ] `--dry-run` soaked for an hour with candidates flowing
 - [ ] Kill switch tested
 - [ ] `max_total_spend_sol` set to a number you would shrug at
