@@ -31,9 +31,69 @@ username and password. This is a *Linux* username and password, nothing to do
 with your Windows login. Pick anything you will remember — you will need the
 password for commands starting with `sudo`.
 
-> If `wsl --install` says it is not recognised, your Windows is too old for the
-> one-command install. Update Windows, or follow Microsoft's manual WSL install
-> steps, then come back.
+### If you get "virtualization is not enabled"
+
+```
+WSL2 is unable to start since virtualization is not enabled on this machine.
+Error code: Wsl/InstallDistro/Service/RegisterDistro/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED
+```
+
+WSL itself installed fine — it just cannot start its virtual machine yet.
+There are two possible causes, and this tells you which:
+
+**Open Task Manager** (Ctrl+Shift+Esc) → **Performance** → **CPU**. Look for
+**Virtualization** on the right.
+
+---
+
+**If it says "Virtualization: Enabled"** — you only need one Windows component.
+In Administrator PowerShell:
+
+```powershell
+wsl --install --no-distribution
+```
+
+Restart, then:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+---
+
+**If it says "Virtualization: Disabled"** (or the line is missing) — it is
+switched off in your computer's firmware. You have to turn it on there; Windows
+cannot do it for you.
+
+1. Restart, and as it boots press the setup key repeatedly. It is usually
+   **Del** or **F2** — some machines use **F1**, **F10** or **Esc**. The boot
+   screen normally says which.
+2. Find the setting. It lives under *Advanced*, *CPU Configuration*, *Security*
+   or *Overclocking* depending on the maker, and is called one of:
+   - **Intel VT-x** / **Intel Virtualization Technology** (Intel)
+   - **SVM Mode** / **AMD-V** (AMD)
+3. Set it to **Enabled**.
+4. Save and exit — usually **F10**.
+
+Then back in Administrator PowerShell:
+
+```powershell
+wsl --install --no-distribution
+```
+
+restart once more, and:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+> **Locked-down or work laptop?** If you cannot get into the firmware, skip WSL
+> entirely — see [Running without WSL](#appendix-running-without-wsl) at the
+> bottom. It works, it is just less tidy.
+
+> If `wsl --install` says it is not recognised at all, your Windows is too old
+> for the one-command install. Update Windows, or follow Microsoft's manual WSL
+> install steps, then come back.
 
 From now on, **every command goes in the Ubuntu window**, not PowerShell. To
 reopen it later: press Start and type `Ubuntu`.
@@ -104,7 +164,7 @@ Check it works:
 python -m pytest -q
 ```
 
-You should see `159 passed`. If you do, the bot is installed correctly.
+You should see `160 passed`. If you do, the bot is installed correctly.
 
 ---
 
@@ -240,3 +300,48 @@ echo "export HELIUS_API_KEY=your-key-here" >> ~/.bashrc
 ```
 
 Do **not** do that with the keystore password on a machine other people use.
+
+
+---
+
+## Appendix: running without WSL
+
+Only use this if you cannot enable virtualization — a locked work laptop, for
+example. Everything works, but you are on a slightly different path from the
+Linux server you will eventually deploy to, so commands in the other guides
+will need translating.
+
+1. Install Python from [python.org](https://python.org) (3.11 or newer). **Tick
+   "Add python.exe to PATH"** on the first screen of the installer.
+2. Install [Git for Windows](https://git-scm.com/download/win).
+3. Open **PowerShell** (normal, not Administrator) and run:
+
+```powershell
+cd $HOME
+git clone <your-repo-url> sniper
+cd sniper
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m pytest -q
+```
+
+> If PowerShell refuses to run the activate script, run
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and try again.
+
+From there follow steps 4-7 of the main guide, with these differences:
+
+| Main guide (Linux) | Windows equivalent |
+|---|---|
+| `export NAME=value` | `$env:NAME = "value"` |
+| `source .venv/bin/activate` | `.\.venv\Scripts\Activate.ps1` |
+| `nano config.toml` | `notepad config.toml` |
+| `cp config.example.toml config.toml` | `copy config.example.toml config.toml` |
+| `chmod 600 config.toml` | not needed — see below |
+
+**One real difference to understand.** On Linux the bot refuses to load your
+wallet file if other users can read it. Windows does not have those permissions,
+so that check cannot run and is skipped — you will see a
+`keystore_permissions_unchecked` warning at startup. Nothing is broken, but the
+protection is not there either, so keep `keystore.json` out of OneDrive,
+Dropbox, or any shared folder.

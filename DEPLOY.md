@@ -134,7 +134,7 @@ su - sniper
 git clone <your-fork> /opt/sniper/app && cd /opt/sniper/app
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m pytest -q          # 159 tests should pass before you go further
+python -m pytest -q          # 160 tests should pass before you go further
 ```
 
 If you chose the `yellowstone` backend:

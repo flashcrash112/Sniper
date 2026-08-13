@@ -418,7 +418,7 @@ pip install pytest pytest-asyncio
 python -m pytest
 ```
 
-159 tests, ~7 s. Covers bonding-curve math and slippage behaviour (including
+160 tests, ~7 s. Covers bonding-curve math and slippage behaviour (including
 that a buy survives a small frontrun and correctly reverts on a large one),
 event parsing against synthetic borsh payloads, matcher scoring and Twitter URL
 normalisation, keystore round-trips and tamper detection, config validation, and

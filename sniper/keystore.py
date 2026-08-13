@@ -30,6 +30,10 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from solders.keypair import Keypair
 
+from .logging_setup import get_logger
+
+log = get_logger("sniper.keystore")
+
 KEYSTORE_VERSION = 1
 
 # ~64 MB of scrypt memory: enough to make offline guessing expensive, small
@@ -141,11 +145,27 @@ def load_keypair(path: Path, password: str) -> Keypair:
     if not path.exists():
         raise KeystoreError(f"keystore not found: {path}")
 
-    mode = path.stat().st_mode
-    if mode & (stat.S_IRWXG | stat.S_IRWXO):
-        raise KeystoreError(
-            f"{path} is accessible to other users (mode {stat.filemode(mode)}); "
-            f"run: chmod 600 {path}"
+    # Windows has no POSIX permission bits — os.stat fakes them, and the faked
+    # value always trips this check. Enforcing it there would block the bot on
+    # a file that is not actually exposed, so the check is POSIX-only and
+    # Windows users get a warning instead.
+    if os.name == "posix":
+        mode = path.stat().st_mode
+        if mode & (stat.S_IRWXG | stat.S_IRWXO):
+            raise KeystoreError(
+                f"{path} is accessible to other users (mode {stat.filemode(mode)}); "
+                f"run: chmod 600 {path}"
+            )
+    else:
+        log.warning(
+            "keystore_permissions_unchecked",
+            extra={
+                "path": str(path),
+                "note": (
+                    "file permissions cannot be verified on this platform; make "
+                    "sure this file is not in a shared or synced folder"
+                ),
+            },
         )
 
     try:

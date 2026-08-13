@@ -86,6 +86,16 @@ def test_world_readable_keystore_is_refused(tmp_path, keypair):
         load_keypair(path, "pw")
 
 
+def test_permission_check_is_skipped_off_posix(tmp_path, keypair, monkeypatch):
+    """Windows fakes st_mode, so the POSIX check would block a fine keystore."""
+    path = tmp_path / "key.json"
+    create_keystore(path, bytes(keypair), "pw", params=FAST)
+    os.chmod(path, 0o644)
+
+    monkeypatch.setattr("sniper.keystore.os.name", "nt")
+    assert load_keypair(path, "pw").pubkey() == keypair.pubkey()
+
+
 def test_empty_password_is_refused(tmp_path, keypair):
     with pytest.raises(KeystoreError, match="empty password"):
         create_keystore(tmp_path / "key.json", bytes(keypair), "", params=FAST)
