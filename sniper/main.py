@@ -31,6 +31,7 @@ from .buyer import Buyer, BuyOutcome
 from .config import Config, ConfigError, load_config
 from .constants import LAMPORTS_PER_SOL, PUMP_FUN_PROGRAM
 from .idl import PROGRAMS, fetch_idl, idl_address, summarise_idl
+from .simulate import find_recent_mint, simulate_buy
 from .exit import ExitManager, Position
 from .jito import JitoClient
 from .keystore import (
@@ -44,6 +45,8 @@ from .listener.base import create_listener, probe_listener
 from .logging_setup import get_logger, setup_logging, shutdown_logging
 from .matcher import Matcher
 from .metadata import MetadataFetcher, TokenMetadata
+from solders.pubkey import Pubkey
+
 from .pumpfun import LaunchEvent
 from .rpc import RpcError, RpcPool
 from .verify import (
@@ -581,6 +584,57 @@ def cmd_verify_layout(args: argparse.Namespace) -> int:
         shutdown_logging()
 
 
+def cmd_simulate(args: argparse.Namespace) -> int:
+    """Execute our real buy against mainnet state without spending anything."""
+    cfg = load_config(args.config)
+    setup_logging(cfg.logging)
+
+    async def run() -> int:
+        password = read_password(cfg.wallet.password_env)
+        keypair = load_keypair(cfg.wallet.keystore_path, password)
+        del password
+
+        async with RpcPool(cfg.rpc.http_url, cfg.rpc.send_urls) as rpc:
+            buyer = Buyer(keypair, rpc, cfg.buy, cfg.rpc, cfg.safety, dry_run=True)
+            await buyer.prepare()
+
+            mint = Pubkey.from_string(args.mint) if args.mint else None
+            if mint is None:
+                print("Finding a live pump.fun coin to simulate against...")
+                mint = await find_recent_mint(rpc)
+                if mint is None:
+                    print("Could not find one. Pass --mint <address> explicitly.")
+                    return 1
+
+            print(f"wallet         {keypair.pubkey()}")
+            print(f"mint           {mint}")
+
+            result = await simulate_buy(rpc, buyer, mint)
+            print(f"token program  {result.token_program} ({result.token_program_name})")
+            print(f"buy amount     {cfg.buy.amount_sol} SOL")
+            if result.units_consumed is not None:
+                print(f"compute units  {result.units_consumed:,}")
+            print()
+
+            if result.logs:
+                print("Program logs:")
+                for line in result.logs:
+                    print(f"  {line}")
+                print()
+            if result.err is not None:
+                print(f"error          {result.err}")
+                print()
+
+            print(f"VERDICT: {result.verdict()}")
+            await buyer.close()
+            return 0 if result.ok or "VALIDATED" in result.verdict() else 1
+
+    try:
+        return asyncio.run(run())
+    finally:
+        shutdown_logging()
+
+
 def cmd_idl(args: argparse.Namespace) -> int:
     """Read the program's own account list off the chain, if it published one."""
     cfg = load_config(args.config)
@@ -735,6 +789,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     idl.add_argument("--dump", help="also write the full IDL JSON to this path")
     idl.set_defaults(func=cmd_idl)
+
+    sim = sub.add_parser(
+        "simulate",
+        help="run our real buy against mainnet state without spending anything",
+    )
+    add_config(sim)
+    sim.add_argument(
+        "--mint", help="coin to simulate buying (default: pick a recent live one)"
+    )
+    sim.set_defaults(func=cmd_simulate)
 
     kill = sub.add_parser("kill", help="engage or clear the kill switch")
     add_config(kill)

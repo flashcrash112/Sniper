@@ -273,15 +273,27 @@ class Buyer:
         return quote_buy(state, self.cfg.amount_lamports, self.cfg.slippage_bps)
 
     def build_transaction(
-        self, event: LaunchEvent, quote: BuyQuote, blockhash: Hash
+        self,
+        event: LaunchEvent,
+        quote: BuyQuote,
+        blockhash: Hash,
+        token_program: Optional[Pubkey] = None,
     ) -> tuple[VersionedTransaction, Pubkey]:
         """Build and sign the buy. Returns the transaction and our token account."""
         assert self._fee_recipient is not None
 
+        # The mint's token program is account 8 *and* a seed of both associated
+        # token accounts, so it has to be settled before anything is derived.
+        token_program = token_program or event.token_program or self.cfg.token_program
+
         mint = event.mint
         bonding_curve = event.bonding_curve or derive_bonding_curve(mint)
-        associated_bonding_curve = derive_associated_token_account(bonding_curve, mint)
-        associated_user = derive_associated_token_account(self.pubkey, mint)
+        associated_bonding_curve = derive_associated_token_account(
+            bonding_curve, mint, token_program
+        )
+        associated_user = derive_associated_token_account(
+            self.pubkey, mint, token_program
+        )
         creator_vault = derive_creator_vault(event.creator)
 
         accounts = BuyAccounts(
@@ -293,12 +305,17 @@ class Buyer:
             user=self.pubkey,
             creator_vault=creator_vault,
             user_volume_accumulator=self._user_volume_accumulator,
+            token_program=token_program,
         )
 
         instructions = [
             *self._budget_ixs,
             build_create_ata_idempotent_instruction(
-                payer=self.pubkey, owner=self.pubkey, mint=mint, ata=associated_user
+                payer=self.pubkey,
+                owner=self.pubkey,
+                mint=mint,
+                ata=associated_user,
+                token_program=token_program,
             ),
             build_buy_instruction(
                 accounts,

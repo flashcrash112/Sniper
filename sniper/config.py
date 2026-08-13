@@ -17,7 +17,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from .constants import LAMPORTS_PER_SOL
+from solders.pubkey import Pubkey
+
+from .constants import LAMPORTS_PER_SOL, TOKEN_2022_PROGRAM, TOKEN_PROGRAM
 from .pumpfun import BuyLayout
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -157,6 +159,10 @@ class BuyConfig:
     compute_unit_limit: int = 120_000
     layout: BuyLayout = BuyLayout.CURRENT
     track_volume: bool = False
+    token_program: Pubkey = TOKEN_2022_PROGRAM
+    """Assumed when the feed does not reveal the mint's token program.
+
+    pump.fun now creates mints under Token-2022, so that is the default."""
 
     @property
     def amount_lamports(self) -> int:
@@ -333,6 +339,13 @@ def _build(raw: dict, source: Optional[Path]) -> Config:
     slippage_bps = buy_s.int_("slippage_bps", 1000)
     if not 0 <= slippage_bps <= 10_000:
         raise ConfigError("[buy] slippage_bps must be between 0 and 10000")
+    token_program_raw = buy_s.str_("token_program", "token2022")
+    token_programs = {"token2022": TOKEN_2022_PROGRAM, "token": TOKEN_PROGRAM}
+    if token_program_raw not in token_programs:
+        raise ConfigError(
+            f"[buy] token_program must be one of {sorted(token_programs)}, "
+            f"got {token_program_raw!r}"
+        )
     layout_raw = buy_s.str_("layout", BuyLayout.CURRENT.value)
     try:
         layout = BuyLayout(layout_raw)
@@ -348,6 +361,7 @@ def _build(raw: dict, source: Optional[Path]) -> Config:
         compute_unit_limit=buy_s.int_("compute_unit_limit", 120_000),
         layout=layout,
         track_volume=buy_s.bool_("track_volume", False),
+        token_program=token_programs[token_program_raw],
     )
 
     safety_s = section("safety")

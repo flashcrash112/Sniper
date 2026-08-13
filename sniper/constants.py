@@ -23,9 +23,17 @@ PUMP_FUN_FEE_PROGRAM = Pubkey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ
 
 SYSTEM_PROGRAM = Pubkey.from_string("11111111111111111111111111111111")
 TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+TOKEN_2022_PROGRAM = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
 ASSOCIATED_TOKEN_PROGRAM = Pubkey.from_string(
     "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 )
+
+# A mint belongs to exactly one of these, and which one changes both account 8
+# of the buy and the derivation of both associated token accounts.
+TOKEN_PROGRAMS = {
+    TOKEN_PROGRAM: "SPL Token (legacy)",
+    TOKEN_2022_PROGRAM: "Token-2022",
+}
 RENT_SYSVAR = Pubkey.from_string("SysvarRent111111111111111111111111111111111")
 COMPUTE_BUDGET_PROGRAM = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
 

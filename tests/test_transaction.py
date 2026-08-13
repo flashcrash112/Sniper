@@ -8,6 +8,7 @@ from solders.pubkey import Pubkey
 from sniper.config import BuyConfig, RpcConfig, SafetyConfig
 from sniper.constants import (
     ASSOCIATED_TOKEN_PROGRAM,
+    TOKEN_2022_PROGRAM,
     BUY_IX_DISCRIMINATOR,
     COMPUTE_BUDGET_PROGRAM,
     EVENT_AUTHORITY,
@@ -88,8 +89,12 @@ def test_transaction_structure(buyer, event):
     buy = instructions[3]
     assert bytes(buy.data)[:8] == BUY_IX_DISCRIMINATOR
     assert len(buy.accounts) == 16, "current pump.fun buy layout takes 16 accounts"
+    # pump.fun mints are Token-2022 now, so that is what account 8 must be.
+    assert keys[buy.accounts[8]] == TOKEN_2022_PROGRAM
 
-    assert ata == derive_associated_token_account(buyer.pubkey, event.mint)
+    assert ata == derive_associated_token_account(
+        buyer.pubkey, event.mint, buyer.cfg.token_program
+    )
 
 
 def test_buy_instruction_arguments_match_the_quote(buyer, event):

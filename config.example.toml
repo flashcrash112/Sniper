@@ -128,8 +128,14 @@ priority_fee_microlamports = 10000000
 # A create-ATA + buy costs roughly 90-110k CU.
 compute_unit_limit = 120000
 
-# "current" (16 accounts) or "legacy" (12). Only change if buys start failing
-# with account-count errors. See "Keeping up with program changes".
+# Which token program the mint belongs to: "token2022" or "token".
+# pump.fun creates mints under Token-2022 now, so that is the default. This is
+# account 8 of the buy AND a seed of both associated token accounts, so getting
+# it wrong makes three accounts wrong at once. `sniper simulate` will tell you.
+token_program = "token2022"
+
+# "current" (16 accounts) or "legacy" (12). The on-chain IDL says 16 — confirm
+# with `python -m sniper idl`. See "Keeping up with program changes".
 layout = "current"
 track_volume = false
 

@@ -24,8 +24,15 @@ from sniper.verify import (
 )
 
 
-def make_buy(layout=BuyLayout.CURRENT):
-    """Build a real buy with our encoder and return (account_keys, data)."""
+def make_buy(layout=BuyLayout.CURRENT, token_program=None):
+    """Build a real buy with our encoder and return (account_keys, data).
+
+    `token_program` is explicit so these tests pin behaviour rather than
+    tracking whatever the config default happens to be.
+    """
+    from sniper.constants import TOKEN_PROGRAM as _LEGACY
+
+    token_program = token_program or _LEGACY
     keypair = Keypair()
     buyer = Buyer(
         keypair=keypair,
@@ -47,7 +54,9 @@ def make_buy(layout=BuyLayout.CURRENT):
         curve=CurveState.initial(),
     )
     quote = buyer.quote(event)
-    tx, _ = buyer.build_transaction(event, quote, Hash.default())
+    tx, _ = buyer.build_transaction(
+        event, quote, Hash.default(), token_program=token_program
+    )
     keys = list(tx.message.account_keys)
     buy_ix = tx.message.instructions[-1]
     return [keys[i] for i in buy_ix.accounts], bytes(buy_ix.data)
@@ -95,6 +104,16 @@ def test_a_swapped_account_is_caught():
     assert not report.ok
     bad = {c.role for c in report.mismatches}
     assert bad == {"system_program", "token_program"}
+
+
+def test_a_real_token_2022_buy_verifies_clean():
+    """What pump.fun actually serves now must verify without complaint."""
+    from sniper.verify import TOKEN_2022_PROGRAM
+
+    observed, data = make_buy(token_program=TOKEN_2022_PROGRAM)
+    report = compare_against_observed(observed, data, BuyLayout.CURRENT)
+    assert report.ok, [c.role for c in report.mismatches]
+    assert report.token_program_name == "Token-2022"
 
 
 def test_a_token_2022_mint_is_recognised_not_reported_as_three_failures():

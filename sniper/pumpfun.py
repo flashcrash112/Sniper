@@ -110,6 +110,13 @@ class LaunchEvent:
     received_ns: int = 0
     """`time.perf_counter_ns()` at the moment the frame was read off the socket."""
 
+    token_program: Optional[Pubkey] = None
+    """The mint's token program, when the feed reveals it.
+
+    Not in the create event, so it is only known on feeds that hand us the
+    transaction's account list. None means "fall back to the configured
+    default"."""
+
     def with_context(
         self,
         *,
@@ -341,7 +348,11 @@ def derive_associated_token_account(
 
 
 def build_create_ata_idempotent_instruction(
-    payer: Pubkey, owner: Pubkey, mint: Pubkey, ata: Pubkey
+    payer: Pubkey,
+    owner: Pubkey,
+    mint: Pubkey,
+    ata: Pubkey,
+    token_program: Pubkey = TOKEN_PROGRAM,
 ) -> Instruction:
     """`CreateIdempotent` on the associated-token program.
 
@@ -358,7 +369,7 @@ def build_create_ata_idempotent_instruction(
             AccountMeta(owner, is_signer=False, is_writable=False),
             AccountMeta(mint, is_signer=False, is_writable=False),
             AccountMeta(SYSTEM_PROGRAM, is_signer=False, is_writable=False),
-            AccountMeta(TOKEN_PROGRAM, is_signer=False, is_writable=False),
+            AccountMeta(token_program, is_signer=False, is_writable=False),
         ],
     )
 
@@ -390,6 +401,13 @@ class BuyAccounts:
     user: Pubkey
     creator_vault: Pubkey
     user_volume_accumulator: Pubkey
+    token_program: Pubkey = TOKEN_PROGRAM
+    """Which token program the mint belongs to.
+
+    pump.fun now creates mints under Token-2022. This sits at account 8 and is
+    also a seed of both associated token accounts, so getting it wrong makes
+    three accounts wrong at once.
+    """
 
 
 def build_buy_instruction(
@@ -419,7 +437,7 @@ def build_buy_instruction(
         AccountMeta(accounts.associated_user, is_signer=False, is_writable=True),
         AccountMeta(accounts.user, is_signer=True, is_writable=True),
         AccountMeta(SYSTEM_PROGRAM, is_signer=False, is_writable=False),
-        AccountMeta(TOKEN_PROGRAM, is_signer=False, is_writable=False),
+        AccountMeta(accounts.token_program, is_signer=False, is_writable=False),
         AccountMeta(accounts.creator_vault, is_signer=False, is_writable=True),
         AccountMeta(EVENT_AUTHORITY, is_signer=False, is_writable=False),
         AccountMeta(PUMP_FUN_PROGRAM, is_signer=False, is_writable=False),
@@ -453,6 +471,7 @@ class SellAccounts:
     associated_user: Pubkey
     user: Pubkey
     creator_vault: Pubkey
+    token_program: Pubkey = TOKEN_PROGRAM
 
 
 def build_sell_instruction(
@@ -483,7 +502,7 @@ def build_sell_instruction(
         AccountMeta(accounts.user, is_signer=True, is_writable=True),
         AccountMeta(SYSTEM_PROGRAM, is_signer=False, is_writable=False),
         AccountMeta(accounts.creator_vault, is_signer=False, is_writable=True),
-        AccountMeta(TOKEN_PROGRAM, is_signer=False, is_writable=False),
+        AccountMeta(accounts.token_program, is_signer=False, is_writable=False),
         AccountMeta(EVENT_AUTHORITY, is_signer=False, is_writable=False),
         AccountMeta(PUMP_FUN_PROGRAM, is_signer=False, is_writable=False),
     ]
