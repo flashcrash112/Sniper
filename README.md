@@ -298,6 +298,14 @@ still current.
 
 ---
 
+## Deploying
+
+See **[DEPLOY.md](DEPLOY.md)** for the full runbook: choosing a VPS and region,
+getting a geyser feed, creating the burner wallet, the systemd unit, and the
+dry-run soak that should happen before your first live buy.
+
+---
+
 ## Tests
 
 ```bash
