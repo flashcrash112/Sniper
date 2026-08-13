@@ -16,7 +16,7 @@ Be clear-eyed about this. Sniping is not a free strategy:
 |---|---|---|
 | VPS | $10–60/mo | A cheap box is fine; location matters far more than specs |
 | Geyser feed | $0 to start, $50–500+/mo to compete | Free tier is enough for setup and dry runs — see step 2 |
-| Priority fees | 0.01–0.15 SOL *per attempt* | Paid whether or not you win the block |
+| Priority fees | 0.001–0.05 SOL *per attempt* | Paid whether or not you win the block. Needs ~10–400 million µlam/CU — see `[buy]` in the example config |
 | Failed buys | Fee only | A reverted buy still costs the priority fee |
 
 If the coin you are waiting for is a known launch that other people are also
@@ -152,9 +152,12 @@ pip install 'grpcio-tools>=1.60'
 are willing to lose:
 
 ```bash
-export SNIPER_KEYSTORE_PASSWORD='<a long random password>'
 python -m sniper keystore create /opt/sniper/keystore.json --generate
 ```
+
+It prompts for the password twice. Do not `export` it here — an interactive
+shell records what you type in `~/.bash_history`. The environment variable is
+for the systemd unit below, where it lives in a root-owned `0600` file.
 
 It prints the public key. Fund that address with your position size plus
 headroom:
@@ -163,9 +166,18 @@ headroom:
 amount_sol  +  priority fee  +  ~0.002 SOL token-account rent  +  0.00001 base fee
 ```
 
-For a 0.25 SOL position at 500000 µlam/CU, that is about **0.32 SOL**. Send a
-little over, not a lot over — the wallet balance is the only limit that is not
-enforced by software you are trusting.
+For a 0.25 SOL position at 10000000 µlam/CU, that is about **0.254 SOL**:
+
+```
+0.25      position
+0.0012    priority fee     (10_000_000 µlam/CU x 120_000 CU / 1e6)
+0.00204   token account rent
+0.000005  base fee
+```
+
+`python -m sniper check` prints these for your exact settings — trust it over
+arithmetic you did by hand. Send a little over, not a lot over: the wallet
+balance is the only limit that is not enforced by software you are trusting.
 
 Store the password so systemd can read it, and nobody else:
 
@@ -201,7 +213,7 @@ require_twitter = true                  # hard gate; safest setting
 [buy]
 amount_sol = 0.05                       # start small, raise it once you have landed one
 slippage_bps = 1500                     # 15% — new launches move fast
-priority_fee_microlamports = 500000     # ~0.06 SOL at the default CU limit
+priority_fee_microlamports = 10000000   # 0.0012 SOL at the default CU limit
 
 [safety]
 max_total_spend_sol = 0.1               # hard ceiling on the whole process

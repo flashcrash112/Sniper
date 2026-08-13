@@ -104,12 +104,25 @@ amount_sol = 0.25
 # someone landing ahead of us instead of reverting.
 slippage_bps = 1000
 
-# Priority fee, micro-lamports per compute unit. This is the main lever for
-# landing in the next block. At the 120k limit below:
-#   1_000_000 µlam/CU = 0.12 SOL   (aggressive)
-#     100_000 µlam/CU = 0.012 SOL  (competitive)
-#      10_000 µlam/CU = 0.0012 SOL (cheap, often too slow for a hot launch)
-priority_fee_microlamports = 500000
+# Priority fee, micro-lamports per compute unit. The main lever for landing in
+# the next block.
+#
+# What it actually costs:  lamports = microlamports_per_cu * compute_unit_limit / 1e6
+# At the 120k limit below:
+#
+#       10_000 µlam/CU = 0.0000012 SOL   effectively free, and effectively useless
+#      100_000 µlam/CU = 0.000012 SOL    fine for ordinary transactions
+#    1_000_000 µlam/CU = 0.00012 SOL     still cheap
+#   10_000_000 µlam/CU = 0.0012 SOL      <- the default below
+#   50_000_000 µlam/CU = 0.006 SOL       contested launch territory
+#  100_000_000 µlam/CU = 0.012 SOL       aggressive
+#
+# Note the scale: because the fee is per compute unit and quoted in
+# MICRO-lamports, the numbers here are much larger than they look. Values in
+# the hundreds of thousands cost a rounding error and will lose every race
+# that matters. `python -m sniper check` prints the real SOL cost of whatever
+# you set — use it rather than doing this arithmetic in your head.
+priority_fee_microlamports = 10000000
 
 # Keep this close to actual usage — the fee is price x limit.
 # A create-ATA + buy costs roughly 90-110k CU.
