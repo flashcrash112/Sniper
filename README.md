@@ -37,6 +37,10 @@ match time are the mint and its creator.
 
 ## Install
 
+**New to this?** Start with **[WINDOWS.md](WINDOWS.md)** if you are on Windows —
+it walks through the whole thing on your own laptop, free, with no server. You
+do not need to rent anything to get the bot running and watching live launches.
+
 Python 3.11+ on a Linux VPS. Put the box near a validator — Frankfurt, Amsterdam
 and Ashburn are the usual choices. Network distance to the leader dominates
 everything this code does.
