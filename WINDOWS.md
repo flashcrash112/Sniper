@@ -31,6 +31,13 @@ username and password. This is a *Linux* username and password, nothing to do
 with your Windows login. Pick anything you will remember — you will need the
 password for commands starting with `sudo`.
 
+> **The password shows nothing as you type it** — no dots, no stars, no cursor
+> movement. That is normal Linux behaviour, not a frozen screen. Type it, press
+> Enter, and type it again to confirm.
+
+When it is done you get a prompt like `adria@DESKTOP-1234:~$`. That is Linux,
+and you are ready for step 2.
+
 ### If you get "virtualization is not enabled"
 
 ```
@@ -134,9 +141,19 @@ and use `python3.12` instead of `python3` in the next step.
 
 ```bash
 cd ~
-git clone <your-repo-url> sniper
+git clone -b claude/pump-fun-sniper-bot-wunrae https://github.com/flashcrash112/Sniper.git sniper
 cd sniper
 ```
+
+The `-b` part matters — the code lives on that branch, and without it you may
+end up with an empty folder.
+
+> **If it asks for a username and password:** the repo is private. GitHub no
+> longer accepts your account password here — you need a Personal Access Token.
+> Go to GitHub → Settings → Developer settings → Personal access tokens →
+> Tokens (classic) → *Generate new token*, tick the **repo** box, and paste the
+> generated token when git asks for the password. Your GitHub username goes in
+> the username prompt as normal.
 
 > **Why this matters.** Windows drives show up in Linux under `/mnt/c/...`, and
 > file permissions do not work properly there. The bot refuses to load a wallet
@@ -318,7 +335,7 @@ will need translating.
 
 ```powershell
 cd $HOME
-git clone <your-repo-url> sniper
+git clone -b claude/pump-fun-sniper-bot-wunrae https://github.com/flashcrash112/Sniper.git sniper
 cd sniper
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
